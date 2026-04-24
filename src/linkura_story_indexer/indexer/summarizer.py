@@ -3,9 +3,8 @@ import os
 import re
 from collections import defaultdict
 
-from llama_index.core import Settings
-from llama_index.core.llms import ChatMessage, MessageRole
-
+from ..console import safe_print
+from ..database import create_text_agent
 from ..models.story import StoryNode
 
 
@@ -41,8 +40,6 @@ class HierarchicalSummarizer:
     """Generates rolling summaries for stories to build the RAG hierarchy."""
 
     def __init__(self, glossary: dict | None = None):
-        # We rely on Settings.llm which is configured in database.py
-        self.llm = Settings.llm
         self.glossary = glossary
 
     def _generate_rolling_summary(self, current_text: str, prev_summary: str | None = None, level_name: str = "Part") -> str:
@@ -61,13 +58,6 @@ class HierarchicalSummarizer:
                 for jp, en in terms.items():
                     system_content += f" - {jp} -> {en}\n"
 
-        messages = [
-            ChatMessage(
-                role=MessageRole.SYSTEM,
-                content=system_content
-            )
-        ]
-        
         prompt = ""
         if prev_summary:
             prompt += f"--- PREVIOUS CONTEXT (For Continuity) ---\n{prev_summary}\n\n"
@@ -77,11 +67,8 @@ class HierarchicalSummarizer:
             prompt += f"--- CURRENT {level_name.upper()} TEXT (IN JAPANESE) ---\n{current_text}\n\n"
             prompt += f"Write a comprehensive English summary of the CURRENT {level_name.upper()} TEXT."
 
-        messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
-        
-        response = self.llm.chat(messages)
-        content = response.message.content
-        return content.strip() if content else ""
+        result = create_text_agent(system_content).run_sync(prompt)
+        return result.output.strip()
 
     def summarize_hierarchy(self, raw_nodes: list[StoryNode], cache_file: str = "summaries_cache.json") -> list[StoryNode]:
         """
@@ -92,17 +79,17 @@ class HierarchicalSummarizer:
         all_summaries = []
 
         # 1. Generate Tier 3 (Part) Summaries
-        print("\n--- Generating Tier 3 (Part) Summaries ---")
+        safe_print("\n--- Generating Tier 3 (Part) Summaries ---")
         part_summaries = self.summarize_parts(raw_nodes, cache_file)
         all_summaries.extend(part_summaries)
 
         # 2. Generate Tier 2 (Episode) Summaries
-        print("\n--- Generating Tier 2 (Episode) Summaries ---")
+        safe_print("\n--- Generating Tier 2 (Episode) Summaries ---")
         episode_summaries = self.summarize_episodes(part_summaries, cache_file)
         all_summaries.extend(episode_summaries)
 
         # 3. Generate Tier 1 (Year) Summaries
-        print("\n--- Generating Tier 1 (Year) Summaries ---")
+        safe_print("\n--- Generating Tier 1 (Year) Summaries ---")
         year_summaries = self.summarize_years(episode_summaries, cache_file)
         all_summaries.extend(year_summaries)
 
@@ -152,13 +139,13 @@ class HierarchicalSummarizer:
                 base_meta.scene_index = -1 # Indicates it covers the whole part
 
                 if cache_key in cache:
-                    print(f"Loading cached summary for {cache_key}...")
+                    safe_print(f"Loading cached summary for {cache_key}...")
                     current_summary = cache[cache_key]
                 else:
                     # Gemini 3 has a massive context window, so we can concatenate the whole part
                     part_text = "\n\n---\n\n".join([n.text for n in scenes])
                     
-                    print(f"Summarizing {cache_key}...")
+                    safe_print(f"Summarizing {cache_key}...")
                     
                     # Generate summary with rolling context
                     current_summary = self._generate_rolling_summary(
@@ -215,11 +202,11 @@ class HierarchicalSummarizer:
             base_meta.part_name = "ALL_PARTS" # Represents the whole episode
 
             if cache_key in cache:
-                print(f"Loading cached episode summary for {cache_key}...")
+                safe_print(f"Loading cached episode summary for {cache_key}...")
                 current_summary = cache[cache_key]
             else:
                 combined_text = "\n\n---\n\n".join([f"Part: {n.metadata.part_name}\n{n.text}" for n in parts])
-                print(f"Summarizing Episode: {cache_key}...")
+                safe_print(f"Summarizing Episode: {cache_key}...")
                 
                 current_summary = self._generate_rolling_summary(
                     current_text=combined_text, 
@@ -271,11 +258,11 @@ class HierarchicalSummarizer:
             base_meta.part_name = "ALL_PARTS"
 
             if cache_key in cache:
-                print(f"Loading cached year summary for {cache_key}...")
+                safe_print(f"Loading cached year summary for {cache_key}...")
                 current_summary = cache[cache_key]
             else:
                 combined_text = "\n\n---\n\n".join([f"Episode: {n.metadata.episode_name}\n{n.text}" for n in episodes])
-                print(f"Summarizing Year: {cache_key}...")
+                safe_print(f"Summarizing Year: {cache_key}...")
                 
                 current_summary = self._generate_rolling_summary(
                     current_text=combined_text, 

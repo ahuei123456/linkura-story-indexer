@@ -2,9 +2,10 @@ import json
 import os
 from typing import Any
 
-from llama_index.core import Settings
-from llama_index.core.prompts import PromptTemplate
+from pydantic_ai import Agent
 
+from ..console import safe_print
+from ..database import create_google_model
 from ..models.state import WorldState
 
 
@@ -12,13 +13,22 @@ class StateExtractor:
     """Extracts world facts from summaries using Map-Reduce to build the State Ledger."""
 
     def __init__(self, cache_file: str = "summaries_cache.json"):
-        self.llm = Settings.llm
         self.cache_file = cache_file
+        self.agent = Agent(
+            create_google_model(),
+            instructions=(
+                "You are a strict archivist extracting factual world-building data from a "
+                "story summary. Extract any characters with their roles, nicknames, and "
+                "honorifics used for others, plus locations and important groups. Return "
+                "data that strictly matches the requested schema."
+            ),
+            output_type=WorldState,
+        )
 
     def extract_from_cache(self, output_file: str = "world_state.json"):
         """Reads Episode summaries from the cache, extracts facts, and merges them by Year."""
         if not os.path.exists(self.cache_file):
-            print(f"Error: {self.cache_file} not found. Please run the ingest command first.")
+            safe_print(f"Error: {self.cache_file} not found. Please run the ingest command first.")
             return
 
         with open(self.cache_file, encoding="utf-8") as f:
@@ -29,10 +39,10 @@ class StateExtractor:
         episode_summaries = {k: v for k, v in cache.items() if k.startswith("EPISODE|")}
         
         if not episode_summaries:
-            print("No Episode summaries found in cache. Did ingestion complete Tier 2?")
+            safe_print("No Episode summaries found in cache. Did ingestion complete Tier 2?")
             return
 
-        print(f"Found {len(episode_summaries)} Episode summaries. Starting Map-Reduce extraction...")
+        safe_print(f"Found {len(episode_summaries)} Episode summaries. Starting Map-Reduce extraction...")
 
         arc_states: dict[str, dict[str, Any]] = {}
 
@@ -42,7 +52,7 @@ class StateExtractor:
             arc_id = parts[1]
             episode_name = parts[3]
 
-            print(f"Extracting facts from Year {arc_id}, Episode: {episode_name}...")
+            safe_print(f"Extracting facts from Year {arc_id}, Episode: {episode_name}...")
             
             extracted_state = self._extract_facts_from_summary(arc_id, summary)
             
@@ -74,22 +84,14 @@ class StateExtractor:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(final_output, f, ensure_ascii=False, indent=2)
         
-        print(f"\nState Ledger successfully written to {output_file}")
+        safe_print(f"\nState Ledger successfully written to {output_file}")
 
     def _extract_facts_from_summary(self, arc_id: str, summary: str) -> WorldState:
         """Uses the LLM to extract a structured WorldState from a summary text."""
-        prompt = PromptTemplate(
-            "You are a strict archivist extracting factual world-building data from a story summary.\n"
-            "Extract any characters (with their roles, nicknames, and honorifics used for others), "
-            "locations, and important groups mentioned in the text.\n"
-            "Output this information strictly matching the requested JSON schema.\n"
-            "The story year (arc_id) is: {arc_id}\n\n"
-            "Story Summary:\n{summary}\n"
+        result = self.agent.run_sync(
+            f"The story year (arc_id) is: {arc_id}\n\nStory Summary:\n{summary}\n"
         )
-        
-        # We use structured_predict to force the LLM to return data matching the WorldState Pydantic model
-        response = self.llm.structured_predict(WorldState, prompt, arc_id=arc_id, summary=summary)
-        return response
+        return result.output
 
     def _merge_states(self, global_state: dict[str, Any], new_state: WorldState):
         """Merges a newly extracted WorldState into the global arc state dictionary."""

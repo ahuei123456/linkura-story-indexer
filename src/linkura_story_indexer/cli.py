@@ -2,18 +2,50 @@ import json
 from pathlib import Path
 
 import typer
-from llama_index.core import Document
 from rich.console import Console
 from rich.progress import Progress
 
-from .database import get_vector_store, initialize_settings
+from .database import embed_texts, get_chroma_collection, initialize_settings
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
 from .indexer.summarizer import HierarchicalSummarizer
+from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
 
 app = typer.Typer()
 console = Console()
+
+
+def _node_id(node: StoryNode) -> str:
+    meta = node.metadata
+    return (
+        f"{meta.arc_id}|{meta.story_type}|{meta.episode_name}|{meta.part_name}|"
+        f"level:{node.summary_level}|scene:{meta.scene_index}"
+    )
+
+
+def _upsert_summary_nodes(nodes: list[StoryNode]) -> None:
+    collection = get_chroma_collection()
+    batch_size = 32
+
+    with Progress() as progress:
+        task = progress.add_task("[green]Embedding summaries...", total=len(nodes))
+        for start in range(0, len(nodes), batch_size):
+            batch = nodes[start : start + batch_size]
+            documents = [node.text for node in batch]
+            metadatas = []
+            for node in batch:
+                metadata = node.metadata.model_dump()
+                metadata["summary_level"] = node.summary_level
+                metadatas.append(metadata)
+
+            collection.upsert(
+                ids=[_node_id(node) for node in batch],
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embed_texts(documents),
+            )
+            progress.update(task, advance=len(batch))
 
 @app.command()
 def hello():
@@ -65,7 +97,6 @@ def extract_state(cache_file: str = typer.Option("summaries_cache.json", help="P
 def ingest(story_dir: str = typer.Option("story", help="Directory containing story files")):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
     initialize_settings()
-    vector_store, storage_context = get_vector_store()
     
     story_path = Path(story_dir)
     if not story_path.exists():
@@ -98,18 +129,7 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
     
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     
-    # Convert summaries to LlamaIndex Documents
-    documents = [
-        Document(text=node.text, metadata=node.metadata.model_dump())
-        for node in summary_nodes
-    ]
-    
-    from llama_index.core import VectorStoreIndex
-    VectorStoreIndex.from_documents(
-        documents, 
-        storage_context=storage_context,
-        show_progress=True
-    )
+    _upsert_summary_nodes(summary_nodes)
     
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
