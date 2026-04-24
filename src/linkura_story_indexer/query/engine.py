@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..console import safe_print
-from ..database import create_text_agent, embed_texts, get_chroma_collection
+from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
 
 
 class StoryQueryEngine:
@@ -22,12 +22,27 @@ class StoryQueryEngine:
             with open(glossary_file, encoding="utf-8") as f:
                 self.glossary = json.load(f)
 
+    def _question_arc_ids(self, question: str) -> set[str]:
+        """Find explicit story arc IDs mentioned in the user's question."""
+        if not self.state_ledger:
+            return set()
+        return {arc_id for arc_id in re.findall(r"\b\d{3}\b", question) if arc_id in self.state_ledger}
+
+    def _state_ledger_arc_ids(self, question: str, retrieved_arc_ids: set[str]) -> set[str]:
+        explicit_arc_ids = self._question_arc_ids(question)
+        if explicit_arc_ids:
+            return explicit_arc_ids
+        return retrieved_arc_ids
+
     def _build_system_prompt(self, arc_ids: set[str]) -> str:
         """Builds the system prompt with invariants and state ledger."""
         prompt = (
             "You are an expert lore-keeper and archivist for a Japanese narrative story.\n"
-            "You are answering a user's question based strictly on the provided raw source text.\n"
-            "Do NOT use outside knowledge. If the provided text does not contain the answer, say so.\n"
+            "Use only the retrieved context provided in this request. Some retrieved context may "
+            "be generated summaries rather than raw source scenes until raw evidence retrieval is "
+            "implemented.\n"
+            "Do NOT use outside knowledge. If the provided context does not contain the answer, "
+            "say so.\n"
             "Cite sources using only the CITATION labels provided in retrieved context. "
             "Do not cite raw Japanese episode titles. "
             "Do not convert the Year/Arc ID to a real-world year like 2024.\n"
@@ -45,7 +60,14 @@ class StoryQueryEngine:
             for arc_id in arc_ids:
                 if arc_id in self.state_ledger:
                     prompt += f"\nYEAR {arc_id} FACTS:\n"
-                    prompt += json.dumps(self.state_ledger[arc_id], ensure_ascii=False, indent=2) + "\n"
+                    prompt += (
+                        json.dumps(
+                            self.state_ledger[arc_id],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
 
         return prompt
 
@@ -92,7 +114,7 @@ class StoryQueryEngine:
         )
 
     def _retrieve(self, question: str) -> list[tuple[str, dict[str, Any]]]:
-        query_embedding = embed_texts([question])[0]
+        query_embedding = embed_texts([question], task_type=RETRIEVAL_QUERY)[0]
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=3,
@@ -137,7 +159,8 @@ class StoryQueryEngine:
             context_chunk += f"SUMMARY:\n{summary}\n\nRAW TEXT:\n{raw_text}\n"
             raw_contexts.append(context_chunk)
 
-        system_prompt = self._build_system_prompt(arc_ids)
+        state_ledger_arc_ids = self._state_ledger_arc_ids(question, arc_ids)
+        system_prompt = self._build_system_prompt(state_ledger_arc_ids)
         combined_context = "\n".join(raw_contexts)
 
         user_prompt = (
