@@ -70,17 +70,10 @@ class StoryQueryEngine:
             # Tier 3 (Part): Read just this specific file
             with open(path, encoding="utf-8") as f:
                 return f"Source: {metadata.get('episode_name')} - {metadata.get('part_name')}\n" + f.read()
-        elif level == 2:
-            # Tier 2 (Episode): Read all markdown files in this directory
-            episode_dir = path.parent
-            text = f"Source: Episode {metadata.get('episode_name')}\n"
-            for md_file in sorted(episode_dir.glob("*.md")):
-                with open(md_file, encoding="utf-8") as f:
-                    text += f"\n--- Part: {md_file.stem} ---\n" + f.read()
-            return text
         else:
-            # For Tier 1 or if we can't determine, just return the summary text itself as fallback
-            return "Global Summary retrieved, raw text is too large. Relying on summary context."
+            # For Tier 1 (Year) and Tier 2 (Episode), the raw text is too large.
+            # We rely entirely on the node's summary text instead.
+            return "Broad Summary retrieved; raw text omitted to preserve context window. Relying on the SUMMARY text provided above."
 
     def query(self, question: str) -> str:
         """Executes the Hierarchical RAG query flow."""
