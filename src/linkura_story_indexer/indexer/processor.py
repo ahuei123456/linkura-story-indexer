@@ -4,6 +4,13 @@ from ..models.story import StoryMetadata, StoryNode
 from .parser import StoryParser
 
 
+def _parent_ids(arc_id: str, story_type: str, episode_name: str, part_name: str) -> tuple[str, str, str]:
+    year_id = arc_id
+    episode_id = f"{arc_id}|{story_type}|{episode_name}"
+    part_id = f"{episode_id}|{part_name}"
+    return year_id, episode_id, part_id
+
+
 class StoryProcessor:
     """Processes story directories into StoryNodes."""
 
@@ -39,20 +46,39 @@ class StoryProcessor:
                 ep_name = folder_name
                 part_name = file_path.stem
 
+            parent_year_id, parent_episode_id, parent_part_id = _parent_ids(
+                arc_id,
+                story_type,
+                ep_name,
+                part_name,
+            )
             return StoryMetadata(
                 arc_id=arc_id,
                 story_type=story_type,
                 episode_name=ep_name,
                 part_name=part_name,
-                file_path=str(file_path)
+                file_path=str(file_path),
+                parent_year_id=parent_year_id,
+                parent_episode_id=parent_episode_id,
+                parent_part_id=parent_part_id,
             )
         except (ValueError, IndexError):
+            part_name = file_path.parent.name
+            parent_year_id, parent_episode_id, parent_part_id = _parent_ids(
+                "unknown",
+                "unknown",
+                "unknown",
+                part_name,
+            )
             return StoryMetadata(
                 arc_id="unknown",
                 story_type="unknown",
                 episode_name="unknown",
-                part_name=file_path.parent.name,
-                file_path=str(file_path)
+                part_name=part_name,
+                file_path=str(file_path),
+                parent_year_id=parent_year_id,
+                parent_episode_id=parent_episode_id,
+                parent_part_id=parent_part_id,
             )
 
     @classmethod
@@ -70,6 +96,7 @@ class StoryProcessor:
             meta = metadata_base.model_copy(deep=True)
             meta.scene_index = i
             meta.is_prose = not is_script
+            meta.detected_speakers = StoryParser.detect_speakers(scene_text)
             nodes.append(StoryNode(text=scene_text, metadata=meta))
             
         return nodes

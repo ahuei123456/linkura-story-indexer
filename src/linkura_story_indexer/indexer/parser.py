@@ -23,6 +23,18 @@ class StoryParser:
         return "", ""
 
     @staticmethod
+    def detect_speakers(content: str) -> list[str]:
+        """Returns unique script speakers in first-seen order."""
+        speakers = []
+        seen = set()
+        for line in content.splitlines():
+            speaker, _ = StoryParser.parse_script_line(line)
+            if speaker and speaker not in seen:
+                speakers.append(speaker)
+                seen.add(speaker)
+        return speakers
+
+    @staticmethod
     def is_script_format(content: str) -> bool:
         """Heuristically determines if a scene is in script format."""
         lines = content.strip().split("\n")

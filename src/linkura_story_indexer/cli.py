@@ -5,10 +5,10 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
-from .database import embed_texts, get_chroma_collection, initialize_settings
+from .database import RETRIEVAL_DOCUMENT, embed_texts, get_chroma_collection, initialize_settings
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
-from .indexer.summarizer import HierarchicalSummarizer
+from .indexer.summarizer import HierarchicalSummarizer, episode_sort_key, natural_sort_key
 from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
 
@@ -18,32 +18,101 @@ console = Console()
 
 def _node_id(node: StoryNode) -> str:
     meta = node.metadata
+    if node.summary_level == 4:
+        return f"scene:{meta.parent_part_id}:{meta.scene_index}"
+    if node.summary_level == 3:
+        return f"summary:part:{meta.parent_part_id}"
+    if node.summary_level == 2:
+        return f"summary:episode:{meta.parent_episode_id}"
+    if node.summary_level == 1:
+        return f"summary:year:{meta.parent_year_id}"
+    return f"level:{node.summary_level}:{meta.parent_part_id}:{meta.scene_index}"
+
+
+def _story_order_key(node: StoryNode) -> tuple:
+    meta = node.metadata
     return (
-        f"{meta.arc_id}|{meta.story_type}|{meta.episode_name}|{meta.part_name}|"
-        f"level:{node.summary_level}|scene:{meta.scene_index}"
+        episode_sort_key((meta.arc_id, meta.story_type, meta.episode_name)),
+        natural_sort_key(meta.part_name),
+        meta.scene_index,
+        meta.file_path,
     )
 
 
-def _upsert_summary_nodes(nodes: list[StoryNode]) -> None:
+def _assign_canonical_story_order(nodes: list[StoryNode]) -> None:
+    for order, node in enumerate(sorted(nodes, key=_story_order_key), start=1):
+        node.metadata.canonical_story_order = order
+
+
+def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
+    if not glossary:
+        return []
+
+    aliases = []
+    seen = set()
+    searchable_text = "\n".join([node.text, *node.metadata.detected_speakers])
+    for terms in glossary.values():
+        if not isinstance(terms, dict):
+            continue
+        for japanese, english in terms.items():
+            if japanese in searchable_text and english not in seen:
+                aliases.append(english)
+                seen.add(english)
+    return aliases
+
+
+def _embedding_document(node: StoryNode, glossary: dict | None = None) -> str:
+    if node.summary_level != 4:
+        return node.text
+
+    meta = node.metadata
+    speakers = ", ".join(meta.detected_speakers) if meta.detected_speakers else "none"
+    aliases = ", ".join(_translation_aliases(node, glossary)) or "none"
+    header = "\n".join(
+        [
+            f"Year: {meta.arc_id}",
+            f"Story type: {meta.story_type}",
+            f"Episode: {meta.episode_name}",
+            f"Part: {meta.part_name}",
+            f"Scene: {meta.scene_index}",
+            f"Canonical story order: {meta.canonical_story_order}",
+            f"Speakers: {speakers}",
+            f"Aliases: {aliases}",
+            "",
+        ]
+    )
+    return f"{header}{node.text}"
+
+
+def _metadata_for_node(node: StoryNode) -> dict:
+    metadata = node.metadata.model_dump()
+    metadata["detected_speakers"] = "|".join(node.metadata.detected_speakers)
+    metadata["summary_level"] = node.summary_level
+    return metadata
+
+
+def _upsert_story_nodes(
+    nodes: list[StoryNode],
+    *,
+    progress_label: str,
+    glossary: dict | None = None,
+) -> None:
     collection = get_chroma_collection()
     batch_size = 32
 
     with Progress() as progress:
-        task = progress.add_task("[green]Embedding summaries...", total=len(nodes))
+        task = progress.add_task(progress_label, total=len(nodes))
         for start in range(0, len(nodes), batch_size):
             batch = nodes[start : start + batch_size]
             documents = [node.text for node in batch]
-            metadatas = []
-            for node in batch:
-                metadata = node.metadata.model_dump()
-                metadata["summary_level"] = node.summary_level
-                metadatas.append(metadata)
+            embedding_documents = [_embedding_document(node, glossary) for node in batch]
+            metadatas = [_metadata_for_node(node) for node in batch]
 
             collection.upsert(
                 ids=[_node_id(node) for node in batch],
                 documents=documents,
                 metadatas=metadatas,
-                embeddings=embed_texts(documents),
+                embeddings=embed_texts(embedding_documents, task_type=RETRIEVAL_DOCUMENT),
             )
             progress.update(task, advance=len(batch))
 
@@ -114,6 +183,8 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
             raw_nodes.extend(nodes)
             progress.update(task, advance=1)
 
+    _assign_canonical_story_order(raw_nodes)
+
     console.print(f"Parsed {len(raw_nodes)} raw scenes. Starting Hierarchical Summarization...")
     
     glossary = None
@@ -129,7 +200,12 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
     
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     
-    _upsert_summary_nodes(summary_nodes)
+    _upsert_story_nodes(
+        raw_nodes,
+        progress_label="[green]Embedding raw scenes...",
+        glossary=glossary,
+    )
+    _upsert_story_nodes(summary_nodes, progress_label="[green]Embedding summaries...")
     
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 

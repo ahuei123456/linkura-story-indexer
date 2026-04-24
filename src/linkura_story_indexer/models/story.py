@@ -9,6 +9,15 @@ class StoryMetadata(BaseModel):
     file_path: str = Field(..., description="Path to the original markdown file")
     scene_index: int = Field(0, description="Index of the scene within the file (split by ---)")
     is_prose: bool = Field(False, description="True if the content is prose/narrative, False if script")
+    canonical_story_order: int = Field(0, description="Global chronological order for this story node")
+    parent_year_id: str = Field("", description="Stable parent year identifier")
+    parent_episode_id: str = Field("", description="Stable parent episode identifier")
+    parent_part_id: str = Field("", description="Stable parent part identifier")
+    detected_speakers: list[str] = Field(
+        default_factory=list,
+        description="Speakers detected in this scene",
+    )
+
 
 class StoryNode(BaseModel):
     text: str = Field(..., description="The actual text content of the scene or summary")
