@@ -1,1 +1,1 @@
-"""linkura_story_indexer package."""
+# Linkura Story Indexer Package

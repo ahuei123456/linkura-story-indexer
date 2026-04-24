@@ -4,7 +4,22 @@ version = "0.1.0"
 description = "Scripts to index the LLLL story"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "chromadb>=1.5.8",
+    "google-genai>=1.73.1",
+    "llama-index>=0.14.21",
+    "llama-index-embeddings-gemini>=0.4.2",
+    "llama-index-embeddings-google-genai>=0.5.0",
+    "llama-index-llms-gemini>=0.6.2",
+    "llama-index-llms-google-genai>=0.9.1",
+    "llama-index-vector-stores-chroma>=0.5.5",
+    "pydantic>=2.13.3",
+    "python-dotenv>=1.2.2",
+    "typer>=0.24.2",
+]
+
+[project.scripts]
+indexer = "linkura_story_indexer.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -22,6 +37,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
 
 [tool.pyrefly]
 project-includes = [

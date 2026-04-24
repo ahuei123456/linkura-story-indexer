@@ -43,3 +43,8 @@ The goal is to implement a **Hierarchical RAG (Retrieval-Augmented Generation)**
 ### Phase 5: Verification & Translation
 1.  **Constraint Injection:** Force the LLM to use the "Mandatory Glossary" and "State Ledger" in its system prompt.
 2.  **Audit Loop:** A secondary LLM pass compares generated output against the Index to flag "Retcon" errors or character name inconsistencies.
+
+### Phase 6: Roadmap & Agentic RAG (Future Upgrades)
+1.  **Tool Calling Upgrade:** Transition the Query Engine from standard sequential RAG to an autonomous Agentic RAG loop.
+2.  **Multi-Hop Reasoning:** Enable the LLM to dynamically call internal tools (e.g. `search_index`, `read_raw_file`) multiple times to resolve complex logic or cross-year lore before answering the user.
+3.  **Data Aggregation:** Add code execution tools (like `python_repl` or `sql_query`) to allow the LLM to answer quantitative queries across the entire repository.
