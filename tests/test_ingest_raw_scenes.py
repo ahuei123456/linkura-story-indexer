@@ -79,6 +79,8 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
     assert len(collection.records) == 3
     assert embedding_calls[0]["task_type"] == RETRIEVAL_DOCUMENT
     assert "Aliases: Kaho Hinoshita, Sayaka Murano" in embedding_calls[0]["texts"][0]
+    assert "Scene span: 1" in embedding_calls[0]["texts"][0]
+    assert "Source scene index span: 0-0" in embedding_calls[0]["texts"][0]
 
     required_keys = {
         "arc_id",
@@ -86,6 +88,9 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
         "episode_name",
         "part_name",
         "scene_index",
+        "scene_start",
+        "scene_end",
+        "source_scene_count",
         "canonical_story_order",
         "parent_year_id",
         "parent_episode_id",
@@ -99,6 +104,9 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
         metadata = record["metadata"]
         assert required_keys <= metadata.keys()
         assert isinstance(metadata["scene_index"], int)
+        assert isinstance(metadata["scene_start"], int)
+        assert isinstance(metadata["scene_end"], int)
+        assert isinstance(metadata["source_scene_count"], int)
         assert isinstance(metadata["canonical_story_order"], int)
         assert isinstance(metadata["detected_speakers"], str)
         assert isinstance(metadata["is_prose"], bool)
@@ -153,6 +161,7 @@ def test_node_ids_are_unique_for_summaries_and_scenes(tmp_path: Path) -> None:
 
     assert len(ids) == len(set(ids))
     assert cli._node_id(raw_nodes[0]) != cli._node_id(raw_nodes[1])
+    assert cli._node_id(raw_nodes[0]).startswith("chunk:")
     assert cli._node_id(part_summary_one) != cli._node_id(part_summary_two)
 
 

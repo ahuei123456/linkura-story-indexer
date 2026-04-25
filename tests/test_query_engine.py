@@ -187,6 +187,18 @@ def test_fetch_raw_text_returns_only_requested_scene(tmp_path):
     assert raw_text == "scene one"
 
 
+def test_fetch_raw_text_returns_requested_scene_span(tmp_path):
+    engine = make_engine()
+    story_file = tmp_path / "part.md"
+    story_file.write_text("scene zero\n---\nscene one\n---\nscene two", encoding="utf-8")
+
+    raw_text = engine._fetch_raw_text(
+        {"file_path": str(story_file), "scene_start": 0, "scene_end": 1}
+    )
+
+    assert raw_text == "scene zero\n\n---\n\nscene one"
+
+
 def test_citation_label_and_metadata_are_split():
     engine = make_engine()
     metadata = {
@@ -207,5 +219,37 @@ def test_citation_label_and_metadata_are_split():
     assert citation_metadata == {
         "file_path": "story/103/第3話『テスト』/2.md",
         "scene_index": 4,
+        "scene_start": None,
+        "scene_end": None,
+        "source_scene_count": None,
+        "canonical_story_order": 30,
+    }
+
+
+def test_citation_label_and_metadata_handle_scene_spans():
+    engine = make_engine()
+    metadata = {
+        "arc_id": "103",
+        "story_type": "Main",
+        "episode_name": "第3話『テスト』",
+        "part_name": "2",
+        "file_path": "story/103/第3話『テスト』/2.md",
+        "scene_index": 0,
+        "scene_start": 0,
+        "scene_end": 6,
+        "source_scene_count": 7,
+        "canonical_story_order": 30,
+    }
+
+    label = engine._citation_label(metadata)
+    citation_metadata = engine._citation_metadata(metadata)
+
+    assert label == "103 · Episode 3 · Part 2 · Scene 1-7"
+    assert citation_metadata == {
+        "file_path": "story/103/第3話『テスト』/2.md",
+        "scene_index": 0,
+        "scene_start": 0,
+        "scene_end": 6,
+        "source_scene_count": 7,
         "canonical_story_order": 30,
     }

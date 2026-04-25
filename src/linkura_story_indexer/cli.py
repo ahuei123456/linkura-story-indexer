@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from .database import RETRIEVAL_DOCUMENT, embed_texts, get_chroma_collection, initialize_settings
+from .indexer.chunker import build_retrieval_chunks
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
 from .indexer.summarizer import HierarchicalSummarizer, episode_sort_key, natural_sort_key
@@ -19,7 +20,7 @@ console = Console()
 def _node_id(node: StoryNode) -> str:
     meta = node.metadata
     if node.summary_level == 4:
-        return f"scene:{meta.parent_part_id}:{meta.scene_index}"
+        return f"chunk:{meta.parent_part_id}:{meta.scene_start}-{meta.scene_end}"
     if node.summary_level == 3:
         return f"summary:part:{meta.parent_part_id}"
     if node.summary_level == 2:
@@ -61,6 +62,13 @@ def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
     return aliases
 
 
+def _human_scene_span(node: StoryNode) -> str:
+    meta = node.metadata
+    if meta.scene_start == meta.scene_end:
+        return str(meta.scene_start + 1)
+    return f"{meta.scene_start + 1}-{meta.scene_end + 1}"
+
+
 def _embedding_document(node: StoryNode, glossary: dict | None = None) -> str:
     if node.summary_level != 4:
         return node.text
@@ -74,7 +82,9 @@ def _embedding_document(node: StoryNode, glossary: dict | None = None) -> str:
             f"Story type: {meta.story_type}",
             f"Episode: {meta.episode_name}",
             f"Part: {meta.part_name}",
-            f"Scene: {meta.scene_index}",
+            f"Scene span: {_human_scene_span(node)}",
+            f"Source scene index span: {meta.scene_start}-{meta.scene_end}",
+            f"Source scene count: {meta.source_scene_count}",
             f"Canonical story order: {meta.canonical_story_order}",
             f"Speakers: {speakers}",
             f"Aliases: {aliases}",
@@ -185,7 +195,12 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
 
     _assign_canonical_story_order(raw_nodes)
 
-    console.print(f"Parsed {len(raw_nodes)} raw scenes. Starting Hierarchical Summarization...")
+    retrieval_chunks = build_retrieval_chunks(raw_nodes)
+
+    console.print(
+        f"Parsed {len(raw_nodes)} raw scenes and built {len(retrieval_chunks)} retrieval chunks. "
+        "Starting Hierarchical Summarization..."
+    )
     
     glossary = None
     glossary_path = Path("glossary.json")
@@ -201,8 +216,8 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     
     _upsert_story_nodes(
-        raw_nodes,
-        progress_label="[green]Embedding raw scenes...",
+        retrieval_chunks,
+        progress_label="[green]Embedding raw retrieval chunks...",
         glossary=glossary,
     )
     _upsert_story_nodes(summary_nodes, progress_label="[green]Embedding summaries...")
