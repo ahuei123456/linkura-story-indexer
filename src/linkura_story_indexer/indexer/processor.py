@@ -95,6 +95,9 @@ class StoryProcessor:
         for i, scene_text in enumerate(scenes):
             meta = metadata_base.model_copy(deep=True)
             meta.scene_index = i
+            meta.scene_start = i
+            meta.scene_end = i
+            meta.source_scene_count = 1
             meta.is_prose = not is_script
             meta.detected_speakers = StoryParser.detect_speakers(scene_text)
             nodes.append(StoryNode(text=scene_text, metadata=meta))

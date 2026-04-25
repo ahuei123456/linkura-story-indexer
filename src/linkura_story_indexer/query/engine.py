@@ -81,15 +81,36 @@ class StoryQueryEngine:
         episode = self._episode_label(metadata)
 
         part = metadata.get("part_name", "unknown")
+        scene_label = self._scene_label(metadata)
+        if scene_label:
+            return f"{arc_id} · {episode} · Part {part} · {scene_label}"
+        return f"{arc_id} · {episode} · Part {part}"
+
+    def _scene_label(self, metadata: dict[str, Any]) -> str:
+        scene_start = metadata.get("scene_start")
+        scene_end = metadata.get("scene_end")
+        if (
+            isinstance(scene_start, int)
+            and scene_start >= 0
+            and isinstance(scene_end, int)
+            and scene_end >= scene_start
+        ):
+            if scene_start == scene_end:
+                return f"Scene {scene_start + 1}"
+            return f"Scene {scene_start + 1}-{scene_end + 1}"
+
         scene_index = metadata.get("scene_index")
         if isinstance(scene_index, int) and scene_index >= 0:
-            return f"{arc_id} · {episode} · Part {part} · Scene {scene_index + 1}"
-        return f"{arc_id} · {episode} · Part {part}"
+            return f"Scene {scene_index + 1}"
+        return ""
 
     def _citation_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         return {
             "file_path": metadata.get("file_path"),
             "scene_index": metadata.get("scene_index"),
+            "scene_start": metadata.get("scene_start"),
+            "scene_end": metadata.get("scene_end"),
+            "source_scene_count": metadata.get("source_scene_count"),
             "canonical_story_order": metadata.get("canonical_story_order"),
         }
 
@@ -104,11 +125,23 @@ class StoryQueryEngine:
         return f"Episode {episode_name}"
 
     def _fetch_raw_text(self, metadata: dict[str, Any]) -> str:
-        """Fetches one raw scene from disk based on (file_path, scene_index)."""
+        """Fetches a raw scene span from disk based on file path and scene metadata."""
         file_path = metadata.get("file_path", "")
-        scene_index = metadata.get("scene_index")
+        scene_start = metadata.get("scene_start")
+        scene_end = metadata.get("scene_end")
 
-        if not file_path or not isinstance(scene_index, int) or scene_index < 0:
+        if not isinstance(scene_start, int) or not isinstance(scene_end, int):
+            scene_index = metadata.get("scene_index")
+            scene_start = scene_index
+            scene_end = scene_index
+
+        if (
+            not file_path
+            or not isinstance(scene_start, int)
+            or not isinstance(scene_end, int)
+            or scene_start < 0
+            or scene_end < scene_start
+        ):
             return ""
         if not os.path.exists(file_path):
             return ""
@@ -117,10 +150,10 @@ class StoryQueryEngine:
         with open(path, encoding="utf-8") as f:
             scenes = StoryParser.split_into_scenes(f.read())
 
-        if scene_index >= len(scenes):
+        if scene_start >= len(scenes) or scene_end >= len(scenes):
             return ""
 
-        return scenes[scene_index]
+        return "\n\n---\n\n".join(scenes[scene_start : scene_end + 1])
 
     def _retrieve(
         self,
@@ -187,7 +220,7 @@ class StoryQueryEngine:
         summaries: list[tuple[str, dict[str, Any]]],
     ) -> list[tuple[str, dict[str, Any]]]:
         expanded_nodes: list[tuple[str, dict[str, Any]]] = []
-        seen: set[tuple[str, int]] = set()
+        seen: set[tuple[str, int, int]] = set()
 
         for _, metadata in summaries:
             raw_filter = self._raw_scene_filter_for_summary(metadata)
@@ -198,12 +231,20 @@ class StoryQueryEngine:
                 question,
                 n_results=RAW_FALLBACK_RESULT_COUNT,
                 where=raw_filter,
-            ):
+                ):
                 if raw_metadata.get("summary_level") != 4:
                     continue
+                scene_start_value = raw_metadata.get("scene_start")
+                if not isinstance(scene_start_value, int):
+                    scene_start_value = raw_metadata.get("scene_index", -1)
+                scene_start = scene_start_value if isinstance(scene_start_value, int) else -1
+
+                scene_end_value = raw_metadata.get("scene_end")
+                scene_end = scene_end_value if isinstance(scene_end_value, int) else scene_start
                 scene_key = (
                     str(raw_metadata.get("file_path", "")),
-                    int(raw_metadata.get("scene_index", -1)),
+                    scene_start,
+                    scene_end,
                 )
                 if scene_key in seen:
                     continue
@@ -224,7 +265,7 @@ class StoryQueryEngine:
             arc_id = meta.get("arc_id")
             safe_print(
                 f"  Evidence {idx + 1}: Year {arc_id}, Ep: {meta.get('episode_name')}, "
-                f"Part: {meta.get('part_name')}, Scene: {meta.get('scene_index')}"
+                f"Part: {meta.get('part_name')}, {self._scene_label(meta) or 'Scene unknown'}"
             )
 
             raw_text = self._fetch_raw_text(meta) or document

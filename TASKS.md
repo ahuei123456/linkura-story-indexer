@@ -103,6 +103,15 @@ v4 items 18-19.
       side-vs-main, character/alias names, temporal phrases, intent
       bucket (summary / exact evidence / comparison / chronology /
       quantitative).
+- [ ] Parse explicit part/scene constraints such as "ABYSS scene 2",
+      "scene 2", and "scenes 3-7"; treat user-facing scene numbers as
+      one-based and convert to zero-based metadata internally.
+- [ ] For explicit scene constraints, filter or post-filter raw chunks
+      by span containment (`scene_start <= requested <= scene_end`).
+- [ ] Handle semantic boundary constraints such as "scenes before Ruri
+      falls asleep" by combining constrained retrieval, reranking, and
+      canonical story order; do not treat them as simple scene-number
+      filters.
 - [ ] Apply Chroma `where` filters from extracted constraints.
 - [ ] Stamp every node at ingest with a canonical numeric story-order
       field independent of filesystem traversal, respecting the
