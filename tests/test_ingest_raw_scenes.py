@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 from linkura_story_indexer import cli
-from linkura_story_indexer.database import RETRIEVAL_DOCUMENT
+from linkura_story_indexer.database import RETRIEVAL_DOCUMENT, EmbeddingInput
 from linkura_story_indexer.indexer.processor import StoryProcessor
 
 
@@ -63,7 +63,7 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
     collection = FakeCollection()
     embedding_calls: list[dict[str, Any]] = []
 
-    def fake_embed_texts(texts: list[str], *, task_type: str) -> list[list[float]]:
+    def fake_embed_texts(texts: list[EmbeddingInput], *, task_type: str) -> list[list[float]]:
         embedding_calls.append({"texts": texts, "task_type": task_type})
         return [[float(index)] for index, _ in enumerate(texts)]
 
@@ -78,9 +78,12 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
 
     assert len(collection.records) == 3
     assert embedding_calls[0]["task_type"] == RETRIEVAL_DOCUMENT
-    assert "Aliases: Kaho Hinoshita, Sayaka Murano" in embedding_calls[0]["texts"][0]
-    assert "Scene span: 1" in embedding_calls[0]["texts"][0]
-    assert "Source scene index span: 0-0" in embedding_calls[0]["texts"][0]
+    first_embedding_document = embedding_calls[0]["texts"][0]
+    assert not isinstance(first_embedding_document, str)
+    assert first_embedding_document.title == "103 | Main | 第1話『花咲きたい！』 | Part 1 | Scene 1"
+    assert "Aliases: Kaho Hinoshita, Sayaka Murano" in first_embedding_document.text
+    assert "Scene span: 1" in first_embedding_document.text
+    assert "Source scene index span: 0-0" in first_embedding_document.text
 
     required_keys = {
         "arc_id",

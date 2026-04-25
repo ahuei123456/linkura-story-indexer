@@ -5,7 +5,13 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
-from .database import RETRIEVAL_DOCUMENT, embed_texts, get_chroma_collection, initialize_settings
+from .database import (
+    RETRIEVAL_DOCUMENT,
+    EmbeddingDocument,
+    embed_texts,
+    get_chroma_collection,
+    initialize_settings,
+)
 from .indexer.chunker import build_retrieval_chunks
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
@@ -69,9 +75,24 @@ def _human_scene_span(node: StoryNode) -> str:
     return f"{meta.scene_start + 1}-{meta.scene_end + 1}"
 
 
-def _embedding_document(node: StoryNode, glossary: dict | None = None) -> str:
+def _embedding_document_title(node: StoryNode) -> str:
+    meta = node.metadata
+    location = [
+        meta.arc_id,
+        meta.story_type,
+        meta.episode_name,
+        f"Part {meta.part_name}",
+    ]
+    if node.summary_level == 4:
+        location.append(f"Scene {_human_scene_span(node)}")
+    else:
+        location.append(f"Level {node.summary_level} summary")
+    return " | ".join(str(part) for part in location if part)
+
+
+def _embedding_document(node: StoryNode, glossary: dict | None = None) -> EmbeddingDocument:
     if node.summary_level != 4:
-        return node.text
+        return EmbeddingDocument(text=node.text, title=_embedding_document_title(node))
 
     meta = node.metadata
     speakers = ", ".join(meta.detected_speakers) if meta.detected_speakers else "none"
@@ -91,7 +112,7 @@ def _embedding_document(node: StoryNode, glossary: dict | None = None) -> str:
             "",
         ]
     )
-    return f"{header}{node.text}"
+    return EmbeddingDocument(text=f"{header}{node.text}", title=_embedding_document_title(node))
 
 
 def _metadata_for_node(node: StoryNode) -> dict:
