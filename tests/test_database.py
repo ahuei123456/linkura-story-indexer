@@ -1,6 +1,7 @@
 from typing import Any
 
 from linkura_story_indexer import database
+from linkura_story_indexer.database import EmbeddingDocument
 
 
 def test_model_and_chroma_env_defaults_and_overrides(monkeypatch):
@@ -140,12 +141,12 @@ def test_embed_texts_respects_batch_size(monkeypatch):
     assert batch_lengths == [2, 1]
 
 
-def test_embed_texts_uses_single_item_calls_for_gemini_embedding_2(monkeypatch):
+def test_embed_texts_uses_inline_document_format_for_gemini_embedding_2(monkeypatch):
     database.reset_client_caches()
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     monkeypatch.delenv("LINKURA_EMBEDDING_MODEL", raising=False)
 
-    call_contents: list[list[str]] = []
+    calls: list[dict[str, Any]] = []
 
     class FakeEmbedding:
         def __init__(self, values: list[float]):
@@ -156,9 +157,15 @@ def test_embed_texts_uses_single_item_calls_for_gemini_embedding_2(monkeypatch):
             self.embeddings = embeddings
 
     class FakeModels:
-        def embed_content(self, *, model: str, contents: list[str], config: Any) -> FakeResponse:
-            call_contents.append(contents)
-            return FakeResponse([FakeEmbedding([float(len(call_contents))])])
+        def embed_content(
+            self,
+            *,
+            model: str,
+            contents: list[str],
+            config: Any | None = None,
+        ) -> FakeResponse:
+            calls.append({"model": model, "contents": contents, "config": config})
+            return FakeResponse([FakeEmbedding([float(len(calls))])])
 
     class FakeGenAIClient:
         def __init__(self, api_key: str):
@@ -166,10 +173,77 @@ def test_embed_texts_uses_single_item_calls_for_gemini_embedding_2(monkeypatch):
 
     monkeypatch.setattr(database.genai, "Client", FakeGenAIClient)
 
-    vectors = database.embed_texts(["one", "two", "three"], batch_size=10)
+    vectors = database.embed_texts(
+        [
+            EmbeddingDocument(text="one", title="first"),
+            EmbeddingDocument(text="two", title="second"),
+            "three",
+        ],
+        batch_size=10,
+    )
 
     assert vectors == [[1.0], [2.0], [3.0]]
-    assert call_contents == [["one"], ["two"], ["three"]]
+    assert calls == [
+        {
+            "model": database.DEFAULT_EMBEDDING_MODEL,
+            "contents": ["title: first | text: one"],
+            "config": None,
+        },
+        {
+            "model": database.DEFAULT_EMBEDDING_MODEL,
+            "contents": ["title: second | text: two"],
+            "config": None,
+        },
+        {
+            "model": database.DEFAULT_EMBEDDING_MODEL,
+            "contents": ["title: none | text: three"],
+            "config": None,
+        },
+    ]
+
+
+def test_embed_texts_uses_inline_query_format_for_gemini_embedding_2(monkeypatch):
+    database.reset_client_caches()
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("LINKURA_EMBEDDING_MODEL", raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeEmbedding:
+        def __init__(self, values: list[float]):
+            self.values = values
+
+    class FakeResponse:
+        def __init__(self, embeddings: list[FakeEmbedding]):
+            self.embeddings = embeddings
+
+    class FakeModels:
+        def embed_content(
+            self,
+            *,
+            model: str,
+            contents: list[str],
+            config: Any | None = None,
+        ) -> FakeResponse:
+            calls.append({"model": model, "contents": contents, "config": config})
+            return FakeResponse([FakeEmbedding([1.0])])
+
+    class FakeGenAIClient:
+        def __init__(self, api_key: str):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(database.genai, "Client", FakeGenAIClient)
+
+    vectors = database.embed_texts(["where is Kaho?"], task_type=database.RETRIEVAL_QUERY)
+
+    assert vectors == [[1.0]]
+    assert calls == [
+        {
+            "model": database.DEFAULT_EMBEDDING_MODEL,
+            "contents": ["task: search result | query: where is Kaho?"],
+            "config": None,
+        }
+    ]
 
 
 def test_embed_texts_falls_back_when_batch_response_count_mismatches(monkeypatch):

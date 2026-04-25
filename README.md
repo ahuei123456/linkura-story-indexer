@@ -11,3 +11,9 @@ Changing retrieval chunk thresholds or raw metadata schema requires rebuilding
 the Chroma index, or pruning stale vectors once Task 9 stale-vector pruning
 exists. Otherwise older one-scene records can remain active beside the new
 chunk IDs.
+
+Changing the embedding model or embedding input format also requires rebuilding
+the Chroma index. The default `gemini-embedding-2` path uses inline retrieval
+instructions (`title: ... | text: ...` for documents and
+`task: search result | query: ...` for queries), which should not be mixed with
+older vectors created from raw text or from a different embedding model.

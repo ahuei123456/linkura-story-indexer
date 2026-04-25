@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import chromadb
@@ -17,6 +18,15 @@ DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 DEFAULT_CHROMA_DB_PATH = "./chroma_db"
 RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
 RETRIEVAL_QUERY = "RETRIEVAL_QUERY"
+
+
+@dataclass(frozen=True)
+class EmbeddingDocument:
+    text: str
+    title: str = "none"
+
+
+EmbeddingInput = str | EmbeddingDocument
 
 _chroma_clients: dict[str, Any] = {}
 _chroma_collections: dict[tuple[str, str], Any] = {}
@@ -75,15 +85,58 @@ def get_genai_client() -> genai.Client:
 def _supports_batch_embeddings(model_name: str) -> bool:
     # google-genai special-cases gemini-embedding-2 by normalizing a list of
     # strings into one Content, so it does not produce one embedding per string.
-    return "gemini-embedding-2" not in model_name
+    return not _uses_inline_embedding_instructions(model_name)
 
 
-def _embed_text_batch(client: genai.Client, texts: Sequence[str], model_name: str, task_type: str) -> list[list[float]]:
-    response = client.models.embed_content(
-        model=model_name,
-        contents=cast(Any, list(texts)),
-        config=types.EmbedContentConfig(task_type=task_type),
-    )
+def _uses_inline_embedding_instructions(model_name: str) -> bool:
+    return "gemini-embedding-2" in model_name
+
+
+def _embedding_input_text(text: EmbeddingInput) -> str:
+    if isinstance(text, EmbeddingDocument):
+        return text.text
+    return text
+
+
+def _embedding_document_title(text: EmbeddingInput) -> str:
+    if isinstance(text, EmbeddingDocument) and text.title:
+        return text.title
+    return "none"
+
+
+def _format_embedding_content(
+    text: EmbeddingInput,
+    *,
+    model_name: str,
+    task_type: str,
+) -> str:
+    content = _embedding_input_text(text)
+    if not _uses_inline_embedding_instructions(model_name):
+        return content
+    if task_type == RETRIEVAL_QUERY:
+        return f"task: search result | query: {content}"
+    if task_type == RETRIEVAL_DOCUMENT:
+        return f"title: {_embedding_document_title(text)} | text: {content}"
+    return content
+
+
+def _embed_text_batch(
+    client: genai.Client,
+    texts: Sequence[str],
+    model_name: str,
+    task_type: str,
+) -> list[list[float]]:
+    if _uses_inline_embedding_instructions(model_name):
+        response = client.models.embed_content(
+            model=model_name,
+            contents=cast(Any, list(texts)),
+        )
+    else:
+        response = client.models.embed_content(
+            model=model_name,
+            contents=cast(Any, list(texts)),
+            config=types.EmbedContentConfig(task_type=task_type),
+        )
     embeddings = response.embeddings or []
     if not embeddings:
         raise ValueError("Google embedding response did not include embeddings")
@@ -100,7 +153,7 @@ def _embed_text_batch(client: genai.Client, texts: Sequence[str], model_name: st
 
 
 def embed_texts(
-    texts: Sequence[str],
+    texts: Sequence[EmbeddingInput],
     *,
     task_type: str = RETRIEVAL_DOCUMENT,
     batch_size: int = 32,
@@ -115,7 +168,10 @@ def embed_texts(
     effective_batch_size = batch_size if _supports_batch_embeddings(model_name) else 1
     vectors = []
     for start in range(0, len(texts), effective_batch_size):
-        batch = list(texts[start : start + effective_batch_size])
+        batch = [
+            _format_embedding_content(text, model_name=model_name, task_type=task_type)
+            for text in texts[start : start + effective_batch_size]
+        ]
         try:
             vectors.extend(_embed_text_batch(client, batch, model_name, task_type))
         except ValueError:
