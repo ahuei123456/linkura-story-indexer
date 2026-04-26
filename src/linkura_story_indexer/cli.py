@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import typer
@@ -50,6 +51,15 @@ def _story_order_key(node: StoryNode) -> tuple:
 def _assign_canonical_story_order(nodes: list[StoryNode]) -> None:
     for order, node in enumerate(sorted(nodes, key=_story_order_key), start=1):
         node.metadata.canonical_story_order = order
+        node.metadata.story_order = order
+
+
+def _episode_number(node: StoryNode) -> int:
+    for value in (node.metadata.episode_name, node.metadata.part_name):
+        match = re.search(r"第(\d+)話", value)
+        if match:
+            return int(match.group(1))
+    return 0
 
 
 def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
@@ -136,6 +146,10 @@ def _lexical_document(node: StoryNode, glossary: dict | None = None) -> str:
 
 def _metadata_for_node(node: StoryNode) -> dict:
     metadata = node.metadata.model_dump()
+    if not metadata.get("story_order"):
+        metadata["story_order"] = metadata.get("canonical_story_order", 0)
+    if not metadata.get("episode_number"):
+        metadata["episode_number"] = _episode_number(node)
     metadata["detected_speakers"] = "|".join(node.metadata.detected_speakers)
     metadata["summary_level"] = node.summary_level
     return metadata

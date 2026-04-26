@@ -9,6 +9,14 @@ from ..console import safe_print
 from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
 from ..indexer.parser import StoryParser
 from ..lexical import LexicalIndex, expand_query_with_glossary
+from .analysis import (
+    CHRONOLOGY_INTENT,
+    EXACT_EVIDENCE_INTENT,
+    QUANTITATIVE_INTENT,
+    SUMMARY_INTENT,
+    QueryAnalysis,
+    analyze_query,
+)
 
 ROUTING_CANDIDATE_COUNT = 20
 RAW_CANDIDATE_COUNT = 40
@@ -234,6 +242,171 @@ class StoryQueryEngine:
 
         return self._results_to_nodes(results)
 
+    def _and_where(self, filters: list[dict[str, Any]]) -> dict[str, Any] | None:
+        cleaned = [item for item in filters if item]
+        if not cleaned:
+            return None
+        if len(cleaned) == 1:
+            return cleaned[0]
+        return {"$and": cleaned}
+
+    def _where_for_analysis(
+        self,
+        analysis: QueryAnalysis | None,
+        *,
+        summary_level: int,
+        include_scene_constraint: bool = False,
+    ) -> dict[str, Any]:
+        filters: list[dict[str, Any]] = [{"summary_level": summary_level}]
+        if analysis is None:
+            return filters[0]
+
+        if len(analysis.arc_ids) == 1:
+            filters.append({"arc_id": analysis.arc_ids[0]})
+        elif len(analysis.arc_ids) > 1:
+            filters.append({"arc_id": {"$in": list(analysis.arc_ids)}})
+
+        if summary_level != 1 and analysis.story_type:
+            filters.append({"story_type": analysis.story_type})
+        if summary_level in {2, 3, 4} and analysis.episode_number is not None:
+            filters.append({"episode_number": analysis.episode_number})
+        if summary_level in {3, 4} and analysis.part_name:
+            filters.append({"part_name": analysis.part_name})
+
+        temporal_filter = self._temporal_story_order_filter(analysis)
+        if temporal_filter is not None:
+            filters.append(temporal_filter)
+
+        if include_scene_constraint and summary_level == 4 and analysis.scene_constraint is not None:
+            scene = analysis.scene_constraint
+            filters.append({"scene_start": {"$lte": scene.end}})
+            filters.append({"scene_end": {"$gte": scene.start}})
+
+        return self._and_where(filters) or {"summary_level": summary_level}
+
+    def _combine_where(self, *filters: dict[str, Any] | None) -> dict[str, Any] | None:
+        flattened: list[dict[str, Any]] = []
+        for item in filters:
+            if not item:
+                continue
+            if set(item.keys()) == {"$and"} and isinstance(item.get("$and"), list):
+                flattened.extend(
+                    sub_item for sub_item in item["$and"] if isinstance(sub_item, dict)
+                )
+            else:
+                flattened.append(item)
+        return self._and_where(flattened)
+
+    def _metadata_value(self, metadata: dict[str, Any], key: str) -> Any:
+        if key == "story_order":
+            return metadata.get("story_order", metadata.get("canonical_story_order"))
+        return metadata.get(key)
+
+    def _metadata_matches_filter(self, metadata: dict[str, Any], where: dict[str, Any]) -> bool:
+        and_filters = where.get("$and")
+        if isinstance(and_filters, list):
+            return all(
+                isinstance(item, dict) and self._metadata_matches_filter(metadata, item)
+                for item in and_filters
+            )
+
+        for key, expected in where.items():
+            if key == "$and":
+                continue
+            actual = self._metadata_value(metadata, key)
+            if isinstance(expected, dict):
+                if not self._metadata_matches_operator(actual, expected):
+                    return False
+                continue
+            if actual != expected:
+                return False
+        return True
+
+    def _metadata_matches_operator(self, actual: Any, expected: dict[str, Any]) -> bool:
+        for operator, value in expected.items():
+            if operator == "$eq":
+                if actual != value:
+                    return False
+                continue
+            if operator == "$in":
+                if not isinstance(value, list) or actual not in value:
+                    return False
+                continue
+            if not isinstance(actual, (int, float)) or not isinstance(value, (int, float)):
+                return False
+            if operator == "$lt" and not actual < value:
+                return False
+            if operator == "$lte" and not actual <= value:
+                return False
+            if operator == "$gt" and not actual > value:
+                return False
+            if operator == "$gte" and not actual >= value:
+                return False
+            if operator not in {"$lt", "$lte", "$gt", "$gte"}:
+                return False
+        return True
+
+    def _temporal_story_order_filter(
+        self,
+        analysis: QueryAnalysis,
+    ) -> dict[str, Any] | None:
+        constraint = analysis.temporal_constraint
+        if constraint is None:
+            return None
+
+        story_order = self._resolve_temporal_story_order(analysis)
+        if story_order is None:
+            return None
+
+        if constraint.operator == "before":
+            return {"story_order": {"$lt": story_order}}
+        if constraint.operator == "after":
+            return {"story_order": {"$gt": story_order}}
+        return {"story_order": {"$lte": story_order}}
+
+    def _resolve_temporal_story_order(self, analysis: QueryAnalysis) -> int | None:
+        constraint = analysis.temporal_constraint
+        if constraint is None:
+            return None
+
+        filters: list[dict[str, Any]] = [{"summary_level": 4}]
+        if constraint.episode_number is not None:
+            filters.append({"episode_number": constraint.episode_number})
+        if constraint.arc_id is not None:
+            filters.append({"arc_id": constraint.arc_id})
+        if len(analysis.arc_ids) == 1 and constraint.arc_id is None:
+            filters.append({"arc_id": analysis.arc_ids[0]})
+        if analysis.story_type:
+            filters.append({"story_type": analysis.story_type})
+
+        where = self._and_where(filters)
+        if where is None or where == {"summary_level": 4}:
+            return None
+
+        collection_get = getattr(getattr(self, "collection", None), "get", None)
+        if not callable(collection_get):
+            return None
+
+        try:
+            results = collection_get(where=where, include=["metadatas"])
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(results, dict):
+            return None
+        orders = [
+            int(order)
+            for metadata in results.get("metadatas", [])
+            if isinstance(metadata, dict)
+            for order in [metadata.get("story_order", metadata.get("canonical_story_order"))]
+            if isinstance(order, int)
+        ]
+        if not orders:
+            return None
+        if constraint.operator == "before":
+            return min(orders)
+        return max(orders)
+
     def _results_to_nodes(self, results: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         documents = results.get("documents") or [[]]
         metadatas = results.get("metadatas") or [[]]
@@ -354,58 +527,73 @@ class StoryQueryEngine:
         question: str,
         *,
         query_embedding: list[float] | None = None,
+        analysis: QueryAnalysis | None = None,
     ) -> list[Node]:
         if query_embedding is None:
             query_embedding = self._query_embedding(question)
         config = self._config()
-        ranked_lists = [
-            self._hybrid_retrieve(
-                question,
-                n_results=config.routing_candidate_count,
-                where={"summary_level": summary_level},
-                query_embedding=query_embedding,
+        summary_levels = self._summary_levels_for_analysis(analysis)
+        ranked_lists = []
+        for summary_level in summary_levels:
+            ranked_lists.append(
+                self._hybrid_retrieve(
+                    question,
+                    n_results=config.routing_candidate_count,
+                    where=self._where_for_analysis(analysis, summary_level=summary_level),
+                    query_embedding=query_embedding,
+                )
             )
-            for summary_level in (1, 2, 3)
-        ]
         ranked_lists.append(
             self._hybrid_retrieve(
                 question,
                 n_results=config.raw_candidate_count,
-                where={"summary_level": 4},
+                where=self._where_for_analysis(
+                    analysis,
+                    summary_level=4,
+                    include_scene_constraint=True,
+                ),
                 query_embedding=query_embedding,
             )
         )
         return self._rrf_fuse(ranked_lists)
 
-    def _raw_scene_filter_for_summary(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    def _summary_levels_for_analysis(self, analysis: QueryAnalysis | None) -> tuple[int, ...]:
+        if analysis is None:
+            return (1, 2, 3)
+        if analysis.scene_constraint is not None or analysis.intent_bucket in {
+            EXACT_EVIDENCE_INTENT,
+            QUANTITATIVE_INTENT,
+        }:
+            return (3,)
+        if analysis.intent_bucket == SUMMARY_INTENT:
+            return (1, 2, 3)
+        if analysis.intent_bucket == CHRONOLOGY_INTENT:
+            return (2, 3)
+        return (1, 2, 3)
+
+    def _raw_scene_filter_for_summary(
+        self,
+        metadata: dict[str, Any],
+        analysis: QueryAnalysis | None = None,
+    ) -> dict[str, Any] | None:
         level = metadata.get("summary_level")
+        analysis_filter = self._where_for_analysis(
+            analysis,
+            summary_level=4,
+            include_scene_constraint=True,
+        )
         if level == 1:
             parent_year_id = metadata.get("parent_year_id") or metadata.get("arc_id")
             if isinstance(parent_year_id, str) and parent_year_id:
-                return {
-                    "$and": [
-                        {"summary_level": 4},
-                        {"parent_year_id": parent_year_id},
-                    ]
-                }
+                return self._combine_where(analysis_filter, {"parent_year_id": parent_year_id})
         if level == 2:
             parent_episode_id = metadata.get("parent_episode_id")
             if isinstance(parent_episode_id, str) and parent_episode_id:
-                return {
-                    "$and": [
-                        {"summary_level": 4},
-                        {"parent_episode_id": parent_episode_id},
-                    ]
-                }
+                return self._combine_where(analysis_filter, {"parent_episode_id": parent_episode_id})
         if level == 3:
             parent_part_id = metadata.get("parent_part_id")
             if isinstance(parent_part_id, str) and parent_part_id:
-                return {
-                    "$and": [
-                        {"summary_level": 4},
-                        {"parent_part_id": parent_part_id},
-                    ]
-                }
+                return self._combine_where(analysis_filter, {"parent_part_id": parent_part_id})
         return None
 
     def _expand_summaries_to_raw_scenes(
@@ -414,13 +602,14 @@ class StoryQueryEngine:
         summaries: list[Node],
         *,
         query_embedding: list[float] | None = None,
+        analysis: QueryAnalysis | None = None,
     ) -> list[Node]:
         if query_embedding is None:
             query_embedding = self._query_embedding(question)
         child_ranked_lists: list[list[Node]] = []
 
         for _, metadata in summaries:
-            raw_filter = self._raw_scene_filter_for_summary(metadata)
+            raw_filter = self._raw_scene_filter_for_summary(metadata, analysis)
             if raw_filter is None:
                 continue
 
@@ -756,22 +945,97 @@ class StoryQueryEngine:
         question: str,
         *,
         query_embedding: list[float] | None = None,
+        analysis: QueryAnalysis | None = None,
     ) -> list[Node]:
         return self._hybrid_retrieve(
             question,
             n_results=self._config().raw_candidate_count,
-            where={"summary_level": 4},
+            where=self._where_for_analysis(
+                analysis,
+                summary_level=4,
+                include_scene_constraint=True,
+            ),
             query_embedding=query_embedding,
         )
+
+    def _filter_raw_nodes_by_analysis(
+        self,
+        nodes: list[Node],
+        analysis: QueryAnalysis,
+    ) -> list[Node]:
+        raw_filter = self._where_for_analysis(
+            analysis,
+            summary_level=4,
+            include_scene_constraint=True,
+        )
+        filtered = [
+            (document, metadata)
+            for document, metadata in nodes
+            if self._metadata_matches_filter(metadata, raw_filter)
+        ]
+        if analysis.scene_constraint is None:
+            return filtered
+
+        scene = analysis.scene_constraint
+        return [
+            (document, metadata)
+            for document, metadata in filtered
+            if (span := self._scene_span(metadata)) is not None
+            and span[0] <= scene.end
+            and span[1] >= scene.start
+        ]
+
+    def _story_order(self, metadata: dict[str, Any]) -> int | None:
+        order = metadata.get("story_order", metadata.get("canonical_story_order"))
+        return order if isinstance(order, int) else None
+
+    def _filter_before_semantic_boundary(
+        self,
+        question: str,
+        expanded_question: str,
+        raw_nodes: list[Node],
+        seed_nodes: list[Node],
+        analysis: QueryAnalysis,
+    ) -> list[Node]:
+        if analysis.semantic_boundary is None:
+            return raw_nodes
+
+        boundary_ranked_nodes = self._rank_raw_candidates(
+            analysis.semantic_boundary,
+            expanded_question,
+            raw_nodes,
+            seed_nodes,
+        )
+        if not boundary_ranked_nodes:
+            return []
+
+        _, boundary_metadata = boundary_ranked_nodes[0]
+        boundary_order = self._story_order(boundary_metadata)
+        if boundary_order is None:
+            return raw_nodes
+
+        if re.search(r"\bafter\b", question, re.IGNORECASE):
+            return [
+                node
+                for node in raw_nodes
+                if (order := self._story_order(node[1])) is not None and order > boundary_order
+            ]
+        return [
+            node
+            for node in raw_nodes
+            if (order := self._story_order(node[1])) is not None and order < boundary_order
+        ]
 
     def query(self, question: str) -> str:
         """Executes the Hierarchical RAG query flow."""
         safe_print("Searching vector index by summary tiers and raw evidence...")
+        analysis = analyze_query(question, self.glossary)
         expanded_question = self._expanded_question(question)
         query_embedding = self._query_embedding(expanded_question)
         retrieved_nodes = self._tiered_retrieve(
             expanded_question,
             query_embedding=query_embedding,
+            analysis=analysis,
         )
 
         if not retrieved_nodes:
@@ -785,11 +1049,12 @@ class StoryQueryEngine:
                 expanded_question,
                 retrieved_nodes,
                 query_embedding=query_embedding,
+                analysis=analysis,
             )
             if child_raw_nodes:
                 raw_ranked_lists.append(child_raw_nodes)
 
-        raw_nodes = self._rrf_fuse(raw_ranked_lists)
+        raw_nodes = self._filter_raw_nodes_by_analysis(self._rrf_fuse(raw_ranked_lists), analysis)
 
         if not raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT
@@ -800,13 +1065,23 @@ class StoryQueryEngine:
             raw_nodes,
             query_embedding=query_embedding,
         )
+        expanded_raw_nodes = self._filter_raw_nodes_by_analysis(expanded_raw_nodes, analysis)
+        expanded_raw_nodes = self._filter_before_semantic_boundary(
+            question,
+            expanded_question,
+            expanded_raw_nodes,
+            raw_nodes,
+            analysis,
+        )
         ranked_raw_nodes = self._rank_raw_candidates(
             question,
             expanded_question,
             expanded_raw_nodes,
             raw_nodes,
         )
-        final_raw_nodes = ranked_raw_nodes[: self._config().final_top_k]
+        final_raw_nodes = self._filter_raw_nodes_by_analysis(ranked_raw_nodes, analysis)[
+            : self._config().final_top_k
+        ]
 
         if not final_raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT

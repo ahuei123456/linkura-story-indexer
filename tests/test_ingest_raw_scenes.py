@@ -95,6 +95,8 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
         "scene_end",
         "source_scene_count",
         "canonical_story_order",
+        "story_order",
+        "episode_number",
         "parent_year_id",
         "parent_episode_id",
         "parent_part_id",
@@ -111,6 +113,8 @@ def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
         assert isinstance(metadata["scene_end"], int)
         assert isinstance(metadata["source_scene_count"], int)
         assert isinstance(metadata["canonical_story_order"], int)
+        assert isinstance(metadata["story_order"], int)
+        assert isinstance(metadata["episode_number"], int)
         assert isinstance(metadata["detected_speakers"], str)
         assert isinstance(metadata["is_prose"], bool)
         assert metadata["summary_level"] == 4
@@ -193,3 +197,37 @@ def test_upsert_raw_scenes_is_idempotent(tmp_path: Path, monkeypatch) -> None:
 
     assert first_count == 2
     assert len(collection.records) == first_count
+
+
+def test_canonical_story_order_slots_side_stories_between_104_and_105(tmp_path: Path) -> None:
+    story_root = tmp_path / "story"
+    main_104_path = _write_story_file(
+        story_root,
+        "104/第1話『未来への歌』/1.md",
+        "104 main",
+    )
+    side_103_path = _write_story_file(
+        story_root,
+        "103/～Shades of Stars～/第1話.md",
+        "103 side",
+    )
+    main_105_path = _write_story_file(
+        story_root,
+        "105/第1話『Brand New Stories!!』/1.md",
+        "105 main",
+    )
+    raw_nodes = [
+        *StoryProcessor.process_file(main_105_path),
+        *StoryProcessor.process_file(side_103_path),
+        *StoryProcessor.process_file(main_104_path),
+    ]
+
+    cli._assign_canonical_story_order(raw_nodes)
+
+    order_by_label = {
+        f"{node.metadata.arc_id}|{node.metadata.story_type}": node.metadata.story_order
+        for node in raw_nodes
+    }
+
+    assert order_by_label["104|Main"] < order_by_label["103|Side"]
+    assert order_by_label["103|Side"] < order_by_label["105|Main"]
