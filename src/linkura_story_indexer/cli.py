@@ -16,6 +16,7 @@ from .indexer.chunker import build_retrieval_chunks
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
 from .indexer.summarizer import HierarchicalSummarizer, episode_sort_key, natural_sort_key
+from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
 
@@ -58,13 +59,13 @@ def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
     aliases = []
     seen = set()
     searchable_text = "\n".join([node.text, *node.metadata.detected_speakers])
-    for terms in glossary.values():
-        if not isinstance(terms, dict):
+    for group in glossary_alias_groups(glossary):
+        if len(group) < 2:
             continue
-        for japanese, english in terms.items():
-            if japanese in searchable_text and english not in seen:
-                aliases.append(english)
-                seen.add(english)
+        english = group[1]
+        if any(alias in searchable_text for alias in group) and english not in seen:
+            aliases.append(english)
+            seen.add(english)
     return aliases
 
 
@@ -115,6 +116,24 @@ def _embedding_document(node: StoryNode, glossary: dict | None = None) -> Embedd
     return EmbeddingDocument(text=f"{header}{node.text}", title=_embedding_document_title(node))
 
 
+def _lexical_document(node: StoryNode, glossary: dict | None = None) -> str:
+    embedding_document = _embedding_document(node, glossary)
+    if node.summary_level != 4:
+        meta = node.metadata
+        header = "\n".join(
+            [
+                f"Year: {meta.arc_id}",
+                f"Story type: {meta.story_type}",
+                f"Episode: {meta.episode_name}",
+                f"Part: {meta.part_name}",
+                f"Summary level: {node.summary_level}",
+                "",
+            ]
+        )
+        return f"{header}{node.text}"
+    return embedding_document.text
+
+
 def _metadata_for_node(node: StoryNode) -> dict:
     metadata = node.metadata.model_dump()
     metadata["detected_speakers"] = "|".join(node.metadata.detected_speakers)
@@ -127,6 +146,7 @@ def _upsert_story_nodes(
     *,
     progress_label: str,
     glossary: dict | None = None,
+    lexical_index: LexicalIndex | None = None,
 ) -> None:
     collection = get_chroma_collection()
     batch_size = 32
@@ -137,14 +157,23 @@ def _upsert_story_nodes(
             batch = nodes[start : start + batch_size]
             documents = [node.text for node in batch]
             embedding_documents = [_embedding_document(node, glossary) for node in batch]
+            lexical_documents = [_lexical_document(node, glossary) for node in batch]
             metadatas = [_metadata_for_node(node) for node in batch]
+            ids = [_node_id(node) for node in batch]
 
             collection.upsert(
-                ids=[_node_id(node) for node in batch],
+                ids=ids,
                 documents=documents,
                 metadatas=metadatas,
                 embeddings=embed_texts(embedding_documents, task_type=RETRIEVAL_DOCUMENT),
             )
+            if lexical_index is not None:
+                lexical_index.upsert_records(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                    search_texts=lexical_documents,
+                )
             progress.update(task, advance=len(batch))
 
 @app.command()
@@ -235,13 +264,20 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes)
     
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
+    lexical_index = LexicalIndex(get_lexical_db_path())
     
     _upsert_story_nodes(
         retrieval_chunks,
         progress_label="[green]Embedding raw retrieval chunks...",
         glossary=glossary,
+        lexical_index=lexical_index,
     )
-    _upsert_story_nodes(summary_nodes, progress_label="[green]Embedding summaries...")
+    _upsert_story_nodes(
+        summary_nodes,
+        progress_label="[green]Embedding summaries...",
+        glossary=glossary,
+        lexical_index=lexical_index,
+    )
     
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
