@@ -109,7 +109,40 @@ def _metadata_matches_where(metadata: dict[str, Any], where: dict[str, Any] | No
     for key, expected in where.items():
         if key == "$and":
             continue
-        if metadata.get(key) != expected:
+        actual = metadata.get(key)
+        if key == "story_order" and actual is None:
+            actual = metadata.get("canonical_story_order")
+        if isinstance(expected, dict):
+            if not _metadata_matches_operator(actual, expected):
+                return False
+            continue
+        if actual != expected:
+            return False
+    return True
+
+
+def _metadata_matches_operator(actual: Any, expected: dict[str, Any]) -> bool:
+    for operator, value in expected.items():
+        if operator == "$eq":
+            if actual != value:
+                return False
+            continue
+        if operator == "$in":
+            if not isinstance(value, list) or actual not in value:
+                return False
+            continue
+
+        if not isinstance(actual, (int, float)) or not isinstance(value, (int, float)):
+            return False
+        if operator == "$lt" and not actual < value:
+            return False
+        if operator == "$lte" and not actual <= value:
+            return False
+        if operator == "$gt" and not actual > value:
+            return False
+        if operator == "$gte" and not actual >= value:
+            return False
+        if operator not in {"$lt", "$lte", "$gt", "$gte"}:
             return False
     return True
 

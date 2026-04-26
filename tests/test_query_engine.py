@@ -2,6 +2,7 @@ from typing import Any
 
 from linkura_story_indexer import database
 from linkura_story_indexer.query import engine as query_engine
+from linkura_story_indexer.query.analysis import analyze_query
 from linkura_story_indexer.query.engine import (
     INSUFFICIENT_SOURCE_CONTEXT,
     RetrievalConfig,
@@ -253,6 +254,138 @@ def test_tiered_retrieve_dispatches_each_summary_tier_and_raw(monkeypatch):
         {"n_results": 20, "where": {"summary_level": 3}},
         {"n_results": 40, "where": {"summary_level": 4}},
     ]
+
+
+def test_analysis_where_applies_side_story_filters_to_specific_tiers(monkeypatch):
+    engine = make_engine()
+    calls: list[dict[str, Any]] = []
+    analysis = analyze_query("What happens in the side stories?")
+
+    def fake_hybrid_retrieve(
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        calls.append({"n_results": n_results, "where": where})
+        assert query_embedding == [0.1]
+        return []
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+
+    assert engine._tiered_retrieve("question", query_embedding=[0.1], analysis=analysis) == []
+    assert calls == [
+        {"n_results": 20, "where": {"summary_level": 1}},
+        {
+            "n_results": 20,
+            "where": {"$and": [{"summary_level": 2}, {"story_type": "Side"}]},
+        },
+        {
+            "n_results": 20,
+            "where": {"$and": [{"summary_level": 3}, {"story_type": "Side"}]},
+        },
+        {
+            "n_results": 40,
+            "where": {"$and": [{"summary_level": 4}, {"story_type": "Side"}]},
+        },
+    ]
+
+
+def test_explicit_scene_where_uses_zero_based_span_overlap() -> None:
+    engine = make_engine()
+    analysis = analyze_query("ABYSS scene 2")
+
+    where = engine._where_for_analysis(
+        analysis,
+        summary_level=4,
+        include_scene_constraint=True,
+    )
+
+    assert where == {
+        "$and": [
+            {"summary_level": 4},
+            {"part_name": "ABYSS"},
+            {"scene_start": {"$lte": 1}},
+            {"scene_end": {"$gte": 1}},
+        ]
+    }
+
+
+def test_scene_point_constraint_matches_containing_coalesced_chunk() -> None:
+    engine = make_engine()
+    analysis = analyze_query("scene 2")
+    nodes = [
+        raw_node("scene 1", scene_start=0, scene_end=0),
+        raw_node("scenes 2-4", scene_start=1, scene_end=3),
+        raw_node("scene 5", scene_start=4, scene_end=4),
+    ]
+
+    filtered = engine._filter_raw_nodes_by_analysis(nodes, analysis)
+
+    assert filtered == [nodes[1]]
+
+
+def test_scene_range_constraint_matches_overlapping_coalesced_chunks() -> None:
+    engine = make_engine()
+    analysis = analyze_query("scenes 3-7")
+    nodes = [
+        raw_node("scene 1", scene_start=0, scene_end=0),
+        raw_node("scenes 2-4", scene_start=1, scene_end=3),
+        raw_node("scenes 5-6", scene_start=4, scene_end=5),
+    ]
+
+    filtered = engine._filter_raw_nodes_by_analysis(nodes, analysis)
+
+    assert filtered == [nodes[1], nodes[2]]
+
+
+def test_temporal_filter_resolves_to_numeric_story_order() -> None:
+    engine = make_engine()
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            assert kwargs["where"] == {"$and": [{"summary_level": 4}, {"episode_number": 12}]}
+            return {"metadatas": [{"story_order": 120}, {"story_order": 125}]}
+
+    engine.collection = FakeCollection()
+    analysis = analyze_query("What did Kaho know before episode 12?")
+
+    where = engine._where_for_analysis(analysis, summary_level=4)
+
+    assert where == {
+        "$and": [
+            {"summary_level": 4},
+            {"story_order": {"$lt": 120}},
+        ]
+    }
+
+
+def test_semantic_boundary_keeps_prior_story_order(monkeypatch) -> None:
+    engine = make_engine()
+    analysis = analyze_query("scenes before Ruri falls asleep")
+    before = raw_node("before", scene_start=0)
+    boundary = raw_node("boundary", scene_start=1)
+    after = raw_node("after", scene_start=2)
+    before[1]["story_order"] = 10
+    boundary[1]["story_order"] = 20
+    after[1]["story_order"] = 30
+
+    monkeypatch.setattr(
+        engine,
+        "_rank_raw_candidates",
+        lambda question, expanded_question, raw_nodes, seed_nodes: [boundary],
+    )
+
+    filtered = engine._filter_before_semantic_boundary(
+        "scenes before Ruri falls asleep",
+        "expanded",
+        [before, boundary, after],
+        [boundary],
+        analysis,
+    )
+
+    assert filtered == [before]
 
 
 def test_tier_two_fanout_retrieves_child_raw_evidence(monkeypatch):

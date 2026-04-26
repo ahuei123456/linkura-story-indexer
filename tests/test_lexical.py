@@ -91,6 +91,26 @@ def test_lexical_search_honors_chroma_style_where_filter(tmp_path: Path) -> None
     assert results == [("花帆: two", _metadata(parent_part_id="part-two"))]
 
 
+def test_lexical_search_honors_numeric_story_order_filter(tmp_path: Path) -> None:
+    index = LexicalIndex(tmp_path / "lexical.db")
+    index.upsert_records(
+        ids=["chunk:one:0-0", "chunk:two:0-0"],
+        documents=["花帆: before", "花帆: after"],
+        metadatas=[
+            _metadata(canonical_story_order=10),
+            _metadata(canonical_story_order=20),
+        ],
+    )
+
+    results = index.search(
+        "花帆",
+        n_results=5,
+        where={"$and": [{"summary_level": 4}, {"story_order": {"$lt": 15}}]},
+    )
+
+    assert results == [("花帆: before", _metadata(canonical_story_order=10))]
+
+
 def test_upsert_story_nodes_writes_matching_lexical_records(tmp_path: Path, monkeypatch) -> None:
     collection_records: dict[str, dict[str, Any]] = {}
 

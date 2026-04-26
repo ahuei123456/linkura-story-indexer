@@ -13,6 +13,8 @@ class StoryMetadata(BaseModel):
     source_scene_count: int = Field(1, description="Number of source scenes covered by this node")
     is_prose: bool = Field(False, description="True if the content is prose/narrative, False if script")
     canonical_story_order: int = Field(0, description="Global chronological order for this story node")
+    story_order: int = Field(0, description="Alias for canonical_story_order used by query filters")
+    episode_number: int = Field(0, description="Numeric episode/part number when one is available")
     parent_year_id: str = Field("", description="Stable parent year identifier")
     parent_episode_id: str = Field("", description="Stable parent episode identifier")
     parent_part_id: str = Field("", description="Stable parent part identifier")
