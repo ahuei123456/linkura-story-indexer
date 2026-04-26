@@ -18,6 +18,7 @@ MAX_RANKED_CANDIDATES = 40
 FINAL_TOP_K = 8
 MIN_FINAL_TOP_K = 5
 MAX_FINAL_TOP_K = 12
+RRF_K = 60
 INSUFFICIENT_SOURCE_CONTEXT = (
     "Insufficient source context: no raw source scenes were found for this question."
 )
@@ -33,6 +34,7 @@ class RetrievalConfig:
     neighbor_scene_window: int = NEIGHBOR_SCENE_WINDOW
     max_ranked_candidates: int = MAX_RANKED_CANDIDATES
     final_top_k: int = FINAL_TOP_K
+    rrf_k: int = RRF_K
 
     def __post_init__(self) -> None:
         if self.routing_candidate_count < 1:
@@ -47,6 +49,8 @@ class RetrievalConfig:
             raise ValueError("max_ranked_candidates must be at least 1")
         if not MIN_FINAL_TOP_K <= self.final_top_k <= MAX_FINAL_TOP_K:
             raise ValueError(f"final_top_k must be between {MIN_FINAL_TOP_K} and {MAX_FINAL_TOP_K}")
+        if self.rrf_k < 1:
+            raise ValueError("rrf_k must be at least 1")
 
 
 DEFAULT_RETRIEVAL_CONFIG = RetrievalConfig()
@@ -287,6 +291,42 @@ class StoryQueryEngine:
             deduped.append((document, metadata))
         return deduped
 
+    def _rrf_fuse(
+        self,
+        ranked_lists: list[list[Node]],
+        *,
+        k: int | None = None,
+    ) -> list[Node]:
+        rrf_k = self._config().rrf_k if k is None else k
+        if rrf_k < 1:
+            raise ValueError("rrf k must be at least 1")
+
+        scores: dict[tuple[Any, ...], float] = {}
+        nodes_by_key: dict[tuple[Any, ...], Node] = {}
+        first_seen: dict[tuple[Any, ...], int] = {}
+        seen_order = 0
+
+        for ranked_list in ranked_lists:
+            seen_in_list: set[tuple[Any, ...]] = set()
+            for rank, (document, metadata) in enumerate(ranked_list, start=1):
+                key = self._node_key(document, metadata)
+                if key in seen_in_list:
+                    continue
+                seen_in_list.add(key)
+
+                if key not in nodes_by_key:
+                    nodes_by_key[key] = (document, metadata)
+                    first_seen[key] = seen_order
+                    seen_order += 1
+
+                scores[key] = scores.get(key, 0.0) + (1.0 / (rrf_k + rank))
+
+        ranked_keys = sorted(
+            scores,
+            key=lambda key: (-scores[key], first_seen[key]),
+        )
+        return [nodes_by_key[key] for key in ranked_keys]
+
     def _hybrid_retrieve(
         self,
         question: str,
@@ -296,7 +336,26 @@ class StoryQueryEngine:
     ) -> list[Node]:
         dense_nodes = self._retrieve(question, n_results=n_results, where=where)
         lexical_nodes = self._lexical_retrieve(question, n_results=n_results, where=where)
-        return self._dedupe_nodes([*dense_nodes, *lexical_nodes])
+        return self._rrf_fuse([dense_nodes, lexical_nodes])[:n_results]
+
+    def _tiered_retrieve(self, question: str) -> list[Node]:
+        config = self._config()
+        ranked_lists = [
+            self._hybrid_retrieve(
+                question,
+                n_results=config.routing_candidate_count,
+                where={"summary_level": summary_level},
+            )
+            for summary_level in (1, 2, 3)
+        ]
+        ranked_lists.append(
+            self._hybrid_retrieve(
+                question,
+                n_results=config.raw_candidate_count,
+                where={"summary_level": 4},
+            )
+        )
+        return self._rrf_fuse(ranked_lists)
 
     def _raw_scene_filter_for_summary(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
         level = metadata.get("summary_level")
@@ -334,39 +393,24 @@ class StoryQueryEngine:
         question: str,
         summaries: list[Node],
     ) -> list[Node]:
-        expanded_nodes: list[Node] = []
-        seen: set[tuple[str, int, int]] = set()
+        child_ranked_lists: list[list[Node]] = []
 
         for _, metadata in summaries:
             raw_filter = self._raw_scene_filter_for_summary(metadata)
             if raw_filter is None:
                 continue
 
-            for document, raw_metadata in self._hybrid_retrieve(
-                question,
-                n_results=self._config().summary_child_candidate_count,
-                where=raw_filter,
-            ):
-                if raw_metadata.get("summary_level") != 4:
-                    continue
-                scene_start_value = raw_metadata.get("scene_start")
-                if not isinstance(scene_start_value, int):
-                    scene_start_value = raw_metadata.get("scene_index", -1)
-                scene_start = scene_start_value if isinstance(scene_start_value, int) else -1
-
-                scene_end_value = raw_metadata.get("scene_end")
-                scene_end = scene_end_value if isinstance(scene_end_value, int) else scene_start
-                scene_key = (
-                    str(raw_metadata.get("file_path", "")),
-                    scene_start,
-                    scene_end,
+            child_nodes = self._raw_evidence_nodes(
+                self._hybrid_retrieve(
+                    question,
+                    n_results=self._config().summary_child_candidate_count,
+                    where=raw_filter,
                 )
-                if scene_key in seen:
-                    continue
-                seen.add(scene_key)
-                expanded_nodes.append((document, raw_metadata))
+            )
+            if child_nodes:
+                child_ranked_lists.append(child_nodes)
 
-        return expanded_nodes
+        return self._rrf_fuse(child_ranked_lists)
 
     def _raw_evidence_nodes(
         self,
@@ -670,23 +714,25 @@ class StoryQueryEngine:
 
     def query(self, question: str) -> str:
         """Executes the Hierarchical RAG query flow."""
-        safe_print("Searching vector index for relevant context...")
+        safe_print("Searching vector index by summary tiers and raw evidence...")
         expanded_question = self._expanded_question(question)
-        retrieved_nodes = self._hybrid_retrieve(
-            expanded_question,
-            n_results=self._config().routing_candidate_count,
-        )
+        retrieved_nodes = self._tiered_retrieve(expanded_question)
 
         if not retrieved_nodes:
-            safe_print("Initial retrieval returned no hits; trying raw-scene retrieval...")
-        raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
-        raw_nodes.extend(self._raw_evidence_nodes(self._raw_only_retrieve(expanded_question)))
+            safe_print("Tiered retrieval returned no hits.")
 
+        direct_raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
+        raw_ranked_lists = [direct_raw_nodes] if direct_raw_nodes else []
         if retrieved_nodes:
             safe_print("Expanding summary hits to child raw scenes...")
-            raw_nodes.extend(self._expand_summaries_to_raw_scenes(expanded_question, retrieved_nodes))
+            child_raw_nodes = self._expand_summaries_to_raw_scenes(
+                expanded_question,
+                retrieved_nodes,
+            )
+            if child_raw_nodes:
+                raw_ranked_lists.append(child_raw_nodes)
 
-        raw_nodes = self._dedupe_nodes(raw_nodes)
+        raw_nodes = self._rrf_fuse(raw_ranked_lists)
 
         if not raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT
