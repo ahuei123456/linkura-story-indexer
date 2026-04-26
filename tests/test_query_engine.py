@@ -74,7 +74,27 @@ def test_retrieve_uses_query_embedding_task_type(monkeypatch):
     assert calls[1]["query_embeddings"] == [[0.1, 0.2]]
 
 
-def test_hybrid_retrieve_concatenates_and_dedupes_dense_and_lexical(monkeypatch):
+def test_retrieval_config_rejects_invalid_rrf_k():
+    try:
+        RetrievalConfig(rrf_k=0)
+    except ValueError as exc:
+        assert "rrf_k must be at least 1" in str(exc)
+    else:
+        raise AssertionError("RetrievalConfig accepted an invalid RRF k")
+
+
+def test_rrf_fusion_combines_fixed_ranked_lists():
+    engine = make_engine()
+    a = raw_node("a", scene_start=0)
+    b = raw_node("b", scene_start=1)
+    c = raw_node("c", scene_start=2)
+
+    fused = engine._rrf_fuse([[a, b], [b, c]], k=1)
+
+    assert fused == [b, a, c]
+
+
+def test_hybrid_retrieve_rrf_fuses_and_dedupes_dense_and_lexical(monkeypatch):
     engine = make_engine()
     dense_node = (
         "dense raw",
@@ -169,30 +189,157 @@ def test_query_uses_configured_candidate_counts(monkeypatch):
         *,
         n_results: int,
         where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
     ) -> list[tuple[str, dict[str, Any]]]:
         calls.append({"n_results": n_results, "where": where})
-        if where is None:
+        assert query_embedding == [0.1]
+        if where == {"summary_level": 3}:
             return [summary_node]
         if where == {"summary_level": 4}:
             return []
-        return [raw_child]
+        if where == {
+            "$and": [
+                {"summary_level": 4},
+                {"parent_part_id": "103|Main|第3話『テスト』|2"},
+            ]
+        }:
+            return [raw_child]
+        return []
 
     monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(engine, "_answer_from_raw_evidence", lambda question, nodes: "answered")
 
     assert engine.query("What happened?") == "answered"
-    assert [call["n_results"] for call in calls] == [21, 41, 31]
+    assert calls == [
+        {"n_results": 21, "where": {"summary_level": 1}},
+        {"n_results": 21, "where": {"summary_level": 2}},
+        {"n_results": 21, "where": {"summary_level": 3}},
+        {"n_results": 41, "where": {"summary_level": 4}},
+        {
+            "n_results": 31,
+            "where": {
+                "$and": [
+                    {"summary_level": 4},
+                    {"parent_part_id": "103|Main|第3話『テスト』|2"},
+                ]
+            },
+        },
+    ]
+
+
+def test_tiered_retrieve_dispatches_each_summary_tier_and_raw(monkeypatch):
+    engine = make_engine()
+    calls: list[dict[str, Any]] = []
+
+    def fake_hybrid_retrieve(
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        calls.append({"n_results": n_results, "where": where})
+        assert query_embedding == [0.1]
+        return []
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    assert engine._tiered_retrieve("question") == []
+    assert calls == [
+        {"n_results": 20, "where": {"summary_level": 1}},
+        {"n_results": 20, "where": {"summary_level": 2}},
+        {"n_results": 20, "where": {"summary_level": 3}},
+        {"n_results": 40, "where": {"summary_level": 4}},
+    ]
+
+
+def test_tier_two_fanout_retrieves_child_raw_evidence(monkeypatch):
+    engine = make_engine()
+    calls: list[dict[str, Any]] = []
+    tier_two_summary = (
+        "episode summary",
+        {
+            "summary_level": 2,
+            "parent_episode_id": "103|Main|第3話『テスト』",
+        },
+    )
+    child = raw_node(
+        "child scene",
+        scene_start=2,
+        parent_part_id="103|Main|第3話『テスト』|2",
+    )
+
+    def fake_hybrid_retrieve(
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        calls.append({"n_results": n_results, "where": where})
+        assert query_embedding == [0.1]
+        return [child]
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_two_summary])
+
+    assert expanded == [child]
+    assert calls == [
+        {
+            "n_results": 30,
+            "where": {
+                "$and": [
+                    {"summary_level": 4},
+                    {"parent_episode_id": "103|Main|第3話『テスト』"},
+                ]
+            },
+        }
+    ]
+
+
+def test_summary_fanout_preserves_coalesced_child_spans(monkeypatch):
+    engine = make_engine()
+    tier_one_summary = (
+        "year summary",
+        {
+            "summary_level": 1,
+            "parent_year_id": "103",
+        },
+    )
+    coalesced_child = raw_node(
+        "coalesced child scene span",
+        scene_start=4,
+        scene_end=7,
+        parent_part_id="103|Main|第3話『テスト』|2",
+    )
+
+    monkeypatch.setattr(
+        engine,
+        "_hybrid_retrieve",
+        lambda question, **kwargs: [coalesced_child],
+    )
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_one_summary])
+
+    assert expanded == [coalesced_child]
+    assert engine._scene_span(expanded[0][1]) == (4, 7)
 
 
 def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
     engine = make_engine()
     query_calls: list[dict[str, Any]] = []
+    embedding_calls: list[list[str]] = []
     agent_prompts: list[str] = []
 
     class FakeCollection:
         def query(self, **kwargs: Any) -> dict[str, list[list[Any]]]:
             query_calls.append(kwargs)
-            if len(query_calls) == 1:
+            if kwargs.get("where") == {"summary_level": 3}:
                 return {
                     "documents": [["part summary"]],
                     "metadatas": [
@@ -208,25 +355,33 @@ def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
                         ]
                     ],
                 }
-            if len(query_calls) == 2:
-                return {"documents": [[]], "metadatas": [[]]}
+            if kwargs.get("where") == {
+                "$and": [
+                    {"summary_level": 4},
+                    {"parent_part_id": "103|Main|第3話『テスト』|2"},
+                ]
+            }:
+                return {
+                    "documents": [["花帆: raw scene"]],
+                    "metadatas": [
+                        [
+                            {
+                                "arc_id": "103",
+                                "story_type": "Main",
+                                "episode_name": "第3話『テスト』",
+                                "part_name": "2",
+                                "summary_level": 4,
+                                "file_path": "missing.md",
+                                "scene_index": 4,
+                                "canonical_story_order": 30,
+                                "parent_part_id": "103|Main|第3話『テスト』|2",
+                            }
+                        ]
+                    ],
+                }
             return {
-                "documents": [["花帆: raw scene"]],
-                "metadatas": [
-                    [
-                        {
-                            "arc_id": "103",
-                            "story_type": "Main",
-                            "episode_name": "第3話『テスト』",
-                            "part_name": "2",
-                            "summary_level": 4,
-                            "file_path": "missing.md",
-                            "scene_index": 4,
-                            "canonical_story_order": 30,
-                            "parent_part_id": "103|Main|第3話『テスト』|2",
-                        }
-                    ]
-                ],
+                "documents": [[]],
+                "metadatas": [[]],
             }
 
     class FakeAgent:
@@ -238,15 +393,20 @@ def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
 
             return Result()
 
-    monkeypatch.setattr(query_engine, "embed_texts", lambda texts, *, task_type: [[0.1]])
+    def fake_embed_texts(texts: list[str], *, task_type: str) -> list[list[float]]:
+        embedding_calls.append(texts)
+        return [[0.1]]
+
+    monkeypatch.setattr(query_engine, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
     engine.collection = FakeCollection()
 
     answer = engine.query("What happened?")
 
     assert answer == "answered from raw scene"
-    assert len(query_calls) == 3
-    assert query_calls[2]["where"] == {
+    assert embedding_calls == [["What happened?"]]
+    assert len(query_calls) == 5
+    assert query_calls[4]["where"] == {
         "$and": [
             {"summary_level": 4},
             {"parent_part_id": "103|Main|第3話『テスト』|2"},
@@ -260,22 +420,28 @@ def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
 def test_query_reports_insufficient_source_context_without_raw_evidence(monkeypatch):
     engine = make_engine()
     query_calls: list[dict[str, Any]] = []
+    embedding_calls: list[list[str]] = []
     agent_called = False
 
     class FakeCollection:
         def query(self, **kwargs: Any) -> dict[str, list[list[Any]]]:
             query_calls.append(kwargs)
+            if kwargs.get("where") == {"summary_level": 3}:
+                return {
+                    "documents": [["part summary"]],
+                    "metadatas": [
+                        [
+                            {
+                                "arc_id": "103",
+                                "summary_level": 3,
+                                "parent_part_id": "103|Main|第3話『テスト』|2",
+                            }
+                        ]
+                    ],
+                }
             return {
-                "documents": [["part summary"]],
-                "metadatas": [
-                    [
-                        {
-                            "arc_id": "103",
-                            "summary_level": 3,
-                            "parent_part_id": "103|Main|第3話『テスト』|2",
-                        }
-                    ]
-                ],
+                "documents": [[]],
+                "metadatas": [[]],
             }
 
     def fake_create_text_agent(system_prompt: str) -> Any:
@@ -283,14 +449,19 @@ def test_query_reports_insufficient_source_context_without_raw_evidence(monkeypa
         agent_called = True
         return object()
 
-    monkeypatch.setattr(query_engine, "embed_texts", lambda texts, *, task_type: [[0.1]])
+    def fake_embed_texts(texts: list[str], *, task_type: str) -> list[list[float]]:
+        embedding_calls.append(texts)
+        return [[0.1]]
+
+    monkeypatch.setattr(query_engine, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(query_engine, "create_text_agent", fake_create_text_agent)
     engine.collection = FakeCollection()
 
     answer = engine.query("What happened?")
 
     assert answer == INSUFFICIENT_SOURCE_CONTEXT
-    assert len(query_calls) == 3
+    assert embedding_calls == [["What happened?"]]
+    assert len(query_calls) == 5
     assert agent_called is False
 
 
@@ -350,6 +521,7 @@ def test_query_caps_final_raw_evidence_to_configured_top_k(monkeypatch):
     captured_counts = []
 
     monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: raw_nodes)
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
 
     def fake_answer(question: str, nodes: list[tuple[str, dict[str, Any]]]) -> str:
         captured_counts.append(len(nodes))
