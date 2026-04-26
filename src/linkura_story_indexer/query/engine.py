@@ -209,14 +209,19 @@ class StoryQueryEngine:
 
         return "\n\n---\n\n".join(scenes[scene_start : scene_end + 1])
 
+    def _query_embedding(self, question: str) -> list[float]:
+        return embed_texts([question], task_type=RETRIEVAL_QUERY)[0]
+
     def _retrieve(
         self,
         question: str,
         *,
         n_results: int = ROUTING_CANDIDATE_COUNT,
         where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
     ) -> list[Node]:
-        query_embedding = embed_texts([question], task_type=RETRIEVAL_QUERY)[0]
+        if query_embedding is None:
+            query_embedding = self._query_embedding(question)
         query_kwargs: dict[str, Any] = {
             "query_embeddings": [query_embedding],
             "n_results": n_results,
@@ -333,18 +338,32 @@ class StoryQueryEngine:
         *,
         n_results: int = ROUTING_CANDIDATE_COUNT,
         where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
     ) -> list[Node]:
-        dense_nodes = self._retrieve(question, n_results=n_results, where=where)
+        dense_nodes = self._retrieve(
+            question,
+            n_results=n_results,
+            where=where,
+            query_embedding=query_embedding,
+        )
         lexical_nodes = self._lexical_retrieve(question, n_results=n_results, where=where)
         return self._rrf_fuse([dense_nodes, lexical_nodes])[:n_results]
 
-    def _tiered_retrieve(self, question: str) -> list[Node]:
+    def _tiered_retrieve(
+        self,
+        question: str,
+        *,
+        query_embedding: list[float] | None = None,
+    ) -> list[Node]:
+        if query_embedding is None:
+            query_embedding = self._query_embedding(question)
         config = self._config()
         ranked_lists = [
             self._hybrid_retrieve(
                 question,
                 n_results=config.routing_candidate_count,
                 where={"summary_level": summary_level},
+                query_embedding=query_embedding,
             )
             for summary_level in (1, 2, 3)
         ]
@@ -353,6 +372,7 @@ class StoryQueryEngine:
                 question,
                 n_results=config.raw_candidate_count,
                 where={"summary_level": 4},
+                query_embedding=query_embedding,
             )
         )
         return self._rrf_fuse(ranked_lists)
@@ -392,7 +412,11 @@ class StoryQueryEngine:
         self,
         question: str,
         summaries: list[Node],
+        *,
+        query_embedding: list[float] | None = None,
     ) -> list[Node]:
+        if query_embedding is None:
+            query_embedding = self._query_embedding(question)
         child_ranked_lists: list[list[Node]] = []
 
         for _, metadata in summaries:
@@ -405,6 +429,7 @@ class StoryQueryEngine:
                     question,
                     n_results=self._config().summary_child_candidate_count,
                     where=raw_filter,
+                    query_embedding=query_embedding,
                 )
             )
             if child_nodes:
@@ -455,7 +480,13 @@ class StoryQueryEngine:
             }
         return None
 
-    def _raw_nodes_for_part(self, question: str, metadata: dict[str, Any]) -> list[Node]:
+    def _raw_nodes_for_part(
+        self,
+        question: str,
+        metadata: dict[str, Any],
+        *,
+        query_embedding: list[float] | None = None,
+    ) -> list[Node]:
         raw_filter = self._raw_part_filter(metadata)
         if raw_filter is None:
             return []
@@ -476,6 +507,7 @@ class StoryQueryEngine:
             question,
             n_results=max(self._config().raw_candidate_count, self._config().max_ranked_candidates),
             where=raw_filter,
+            query_embedding=query_embedding,
         )
 
     def _sort_raw_nodes(self, nodes: list[Node]) -> list[Node]:
@@ -492,7 +524,13 @@ class StoryQueryEngine:
 
         return sorted(nodes, key=sort_key)
 
-    def _expand_raw_neighbors(self, question: str, raw_nodes: list[Node]) -> list[Node]:
+    def _expand_raw_neighbors(
+        self,
+        question: str,
+        raw_nodes: list[Node],
+        *,
+        query_embedding: list[float] | None = None,
+    ) -> list[Node]:
         window = self._config().neighbor_scene_window
         if window < 1:
             return self._dedupe_nodes(raw_nodes)
@@ -515,8 +553,16 @@ class StoryQueryEngine:
                 )
             )
             if part_cache_key not in part_cache:
+                if query_embedding is not None:
+                    part_nodes = self._raw_nodes_for_part(
+                        question,
+                        metadata,
+                        query_embedding=query_embedding,
+                    )
+                else:
+                    part_nodes = self._raw_nodes_for_part(question, metadata)
                 part_cache[part_cache_key] = self._sort_raw_nodes(
-                    self._raw_nodes_for_part(question, metadata)
+                    part_nodes
                 )
 
             window_start = span[0] - window
@@ -705,18 +751,28 @@ class StoryQueryEngine:
         result = create_text_agent(system_prompt).run_sync(user_prompt)
         return result.output.strip() or "No answer generated."
 
-    def _raw_only_retrieve(self, question: str) -> list[Node]:
+    def _raw_only_retrieve(
+        self,
+        question: str,
+        *,
+        query_embedding: list[float] | None = None,
+    ) -> list[Node]:
         return self._hybrid_retrieve(
             question,
             n_results=self._config().raw_candidate_count,
             where={"summary_level": 4},
+            query_embedding=query_embedding,
         )
 
     def query(self, question: str) -> str:
         """Executes the Hierarchical RAG query flow."""
         safe_print("Searching vector index by summary tiers and raw evidence...")
         expanded_question = self._expanded_question(question)
-        retrieved_nodes = self._tiered_retrieve(expanded_question)
+        query_embedding = self._query_embedding(expanded_question)
+        retrieved_nodes = self._tiered_retrieve(
+            expanded_question,
+            query_embedding=query_embedding,
+        )
 
         if not retrieved_nodes:
             safe_print("Tiered retrieval returned no hits.")
@@ -728,6 +784,7 @@ class StoryQueryEngine:
             child_raw_nodes = self._expand_summaries_to_raw_scenes(
                 expanded_question,
                 retrieved_nodes,
+                query_embedding=query_embedding,
             )
             if child_raw_nodes:
                 raw_ranked_lists.append(child_raw_nodes)
@@ -738,7 +795,11 @@ class StoryQueryEngine:
             return INSUFFICIENT_SOURCE_CONTEXT
 
         safe_print("Expanding neighboring raw evidence...")
-        expanded_raw_nodes = self._expand_raw_neighbors(expanded_question, raw_nodes)
+        expanded_raw_nodes = self._expand_raw_neighbors(
+            expanded_question,
+            raw_nodes,
+            query_embedding=query_embedding,
+        )
         ranked_raw_nodes = self._rank_raw_candidates(
             question,
             expanded_question,
