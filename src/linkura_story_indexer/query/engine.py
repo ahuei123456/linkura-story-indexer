@@ -7,6 +7,7 @@ from typing import Any
 from ..console import safe_print
 from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
 from ..indexer.parser import StoryParser
+from ..lexical import LexicalIndex, expand_query_with_glossary
 
 INITIAL_RESULT_COUNT = 3
 RAW_FALLBACK_RESULT_COUNT = 5
@@ -18,6 +19,7 @@ INSUFFICIENT_SOURCE_CONTEXT = (
 class StoryQueryEngine:
     def __init__(self, state_file: str = "world_state.json", glossary_file: str = "glossary.json"):
         self.collection = get_chroma_collection()
+        self.lexical_index = LexicalIndex()
 
         self.state_ledger: dict[str, Any] = {}
         if os.path.exists(state_file):
@@ -28,6 +30,9 @@ class StoryQueryEngine:
         if os.path.exists(glossary_file):
             with open(glossary_file, encoding="utf-8") as f:
                 self.glossary = json.load(f)
+
+    def _expanded_question(self, question: str) -> str:
+        return expand_query_with_glossary(question, self.glossary)
 
     def _question_arc_ids(self, question: str) -> set[str]:
         """Find explicit story arc IDs mentioned in the user's question."""
@@ -183,6 +188,63 @@ class StoryQueryEngine:
             for document, metadata in zip(documents[0], metadatas[0], strict=False)
         ]
 
+    def _lexical_retrieve(
+        self,
+        question: str,
+        *,
+        n_results: int = INITIAL_RESULT_COUNT,
+        where: dict[str, Any] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        lexical_index = getattr(self, "lexical_index", None)
+        if lexical_index is None:
+            return []
+        return lexical_index.search(question, n_results=n_results, where=where)
+
+    def _node_key(self, document: str, metadata: dict[str, Any]) -> tuple[Any, ...]:
+        scene_start = metadata.get("scene_start")
+        if not isinstance(scene_start, int):
+            scene_start = metadata.get("scene_index")
+        scene_end = metadata.get("scene_end")
+        if not isinstance(scene_end, int):
+            scene_end = scene_start
+        key = (
+            metadata.get("summary_level"),
+            metadata.get("parent_year_id"),
+            metadata.get("parent_episode_id"),
+            metadata.get("parent_part_id"),
+            metadata.get("file_path"),
+            scene_start,
+            scene_end,
+        )
+        if any(part not in (None, "") for part in key):
+            return key
+        return (document,)
+
+    def _dedupe_nodes(
+        self,
+        nodes: list[tuple[str, dict[str, Any]]],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        deduped = []
+        seen = set()
+        for document, metadata in nodes:
+            key = self._node_key(document, metadata)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((document, metadata))
+        return deduped
+
+    def _hybrid_retrieve(
+        self,
+        question: str,
+        *,
+        n_results: int = INITIAL_RESULT_COUNT,
+        where: dict[str, Any] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        dense_nodes = self._retrieve(question, n_results=n_results, where=where)
+        lexical_nodes = self._lexical_retrieve(question, n_results=n_results, where=where)
+        return self._dedupe_nodes([*dense_nodes, *lexical_nodes])
+
     def _raw_scene_filter_for_summary(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
         level = metadata.get("summary_level")
         if level == 1:
@@ -227,7 +289,7 @@ class StoryQueryEngine:
             if raw_filter is None:
                 continue
 
-            for document, raw_metadata in self._retrieve(
+            for document, raw_metadata in self._hybrid_retrieve(
                 question,
                 n_results=RAW_FALLBACK_RESULT_COUNT,
                 where=raw_filter,
@@ -311,28 +373,27 @@ class StoryQueryEngine:
         return result.output.strip() or "No answer generated."
 
     def _raw_only_retrieve(self, question: str) -> list[tuple[str, dict[str, Any]]]:
-        results = self.collection.query(
-            query_embeddings=[embed_texts([question], task_type=RETRIEVAL_QUERY)[0]],
+        return self._hybrid_retrieve(
+            question,
             n_results=RAW_FALLBACK_RESULT_COUNT,
             where={"summary_level": 4},
-            include=["documents", "metadatas"],
         )
-        return self._results_to_nodes(results)
 
     def query(self, question: str) -> str:
         """Executes the Hierarchical RAG query flow."""
         safe_print("Searching vector index for relevant context...")
-        retrieved_nodes = self._retrieve(question)
+        expanded_question = self._expanded_question(question)
+        retrieved_nodes = self._hybrid_retrieve(expanded_question)
 
         if not retrieved_nodes:
             safe_print("Initial retrieval returned no hits; trying raw-scene retrieval...")
-            raw_nodes = self._raw_evidence_nodes(self._raw_only_retrieve(question))
+            raw_nodes = self._raw_evidence_nodes(self._raw_only_retrieve(expanded_question))
         else:
             raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
 
         if not raw_nodes and retrieved_nodes:
             safe_print("Initial retrieval found only summaries; expanding to child raw scenes...")
-            raw_nodes = self._expand_summaries_to_raw_scenes(question, retrieved_nodes)
+            raw_nodes = self._expand_summaries_to_raw_scenes(expanded_question, retrieved_nodes)
 
         if not raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT

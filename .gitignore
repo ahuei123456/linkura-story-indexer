@@ -215,3 +215,4 @@ config.json
 chroma_db/
 summaries_cache.json
 world_state.json
+lexical_index.db

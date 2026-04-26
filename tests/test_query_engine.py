@@ -69,6 +69,46 @@ def test_retrieve_uses_query_embedding_task_type(monkeypatch):
     assert calls[1]["query_embeddings"] == [[0.1, 0.2]]
 
 
+def test_hybrid_retrieve_concatenates_and_dedupes_dense_and_lexical(monkeypatch):
+    engine = make_engine()
+    dense_node = (
+        "dense raw",
+        {
+            "summary_level": 4,
+            "file_path": "story/part.md",
+            "scene_start": 0,
+            "scene_end": 1,
+        },
+    )
+    lexical_duplicate = (
+        "lexical raw",
+        {
+            "summary_level": 4,
+            "file_path": "story/part.md",
+            "scene_start": 0,
+            "scene_end": 1,
+        },
+    )
+    lexical_new = (
+        "lexical second",
+        {
+            "summary_level": 4,
+            "file_path": "story/part.md",
+            "scene_start": 2,
+            "scene_end": 2,
+        },
+    )
+
+    monkeypatch.setattr(engine, "_retrieve", lambda question, **kwargs: [dense_node])
+    monkeypatch.setattr(
+        engine,
+        "_lexical_retrieve",
+        lambda question, **kwargs: [lexical_duplicate, lexical_new],
+    )
+
+    assert engine._hybrid_retrieve("expanded question") == [dense_node, lexical_new]
+
+
 def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
     engine = make_engine()
     query_calls: list[dict[str, Any]] = []
