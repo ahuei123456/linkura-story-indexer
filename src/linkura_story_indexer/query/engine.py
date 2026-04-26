@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,17 +10,58 @@ from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chro
 from ..indexer.parser import StoryParser
 from ..lexical import LexicalIndex, expand_query_with_glossary
 
-INITIAL_RESULT_COUNT = 3
-RAW_FALLBACK_RESULT_COUNT = 5
+ROUTING_CANDIDATE_COUNT = 20
+RAW_CANDIDATE_COUNT = 40
+SUMMARY_CHILD_CANDIDATE_COUNT = 30
+NEIGHBOR_SCENE_WINDOW = 1
+MAX_RANKED_CANDIDATES = 40
+FINAL_TOP_K = 8
+MIN_FINAL_TOP_K = 5
+MAX_FINAL_TOP_K = 12
 INSUFFICIENT_SOURCE_CONTEXT = (
     "Insufficient source context: no raw source scenes were found for this question."
 )
 
+Node = tuple[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    routing_candidate_count: int = ROUTING_CANDIDATE_COUNT
+    raw_candidate_count: int = RAW_CANDIDATE_COUNT
+    summary_child_candidate_count: int = SUMMARY_CHILD_CANDIDATE_COUNT
+    neighbor_scene_window: int = NEIGHBOR_SCENE_WINDOW
+    max_ranked_candidates: int = MAX_RANKED_CANDIDATES
+    final_top_k: int = FINAL_TOP_K
+
+    def __post_init__(self) -> None:
+        if self.routing_candidate_count < 1:
+            raise ValueError("routing_candidate_count must be at least 1")
+        if self.raw_candidate_count < 1:
+            raise ValueError("raw_candidate_count must be at least 1")
+        if self.summary_child_candidate_count < 1:
+            raise ValueError("summary_child_candidate_count must be at least 1")
+        if self.neighbor_scene_window < 0:
+            raise ValueError("neighbor_scene_window must be non-negative")
+        if self.max_ranked_candidates < 1:
+            raise ValueError("max_ranked_candidates must be at least 1")
+        if not MIN_FINAL_TOP_K <= self.final_top_k <= MAX_FINAL_TOP_K:
+            raise ValueError(f"final_top_k must be between {MIN_FINAL_TOP_K} and {MAX_FINAL_TOP_K}")
+
+
+DEFAULT_RETRIEVAL_CONFIG = RetrievalConfig()
+
 
 class StoryQueryEngine:
-    def __init__(self, state_file: str = "world_state.json", glossary_file: str = "glossary.json"):
+    def __init__(
+        self,
+        state_file: str = "world_state.json",
+        glossary_file: str = "glossary.json",
+        retrieval_config: RetrievalConfig | None = None,
+    ):
         self.collection = get_chroma_collection()
         self.lexical_index = LexicalIndex()
+        self.retrieval_config = retrieval_config or DEFAULT_RETRIEVAL_CONFIG
 
         self.state_ledger: dict[str, Any] = {}
         if os.path.exists(state_file):
@@ -33,6 +75,9 @@ class StoryQueryEngine:
 
     def _expanded_question(self, question: str) -> str:
         return expand_query_with_glossary(question, self.glossary)
+
+    def _config(self) -> RetrievalConfig:
+        return getattr(self, "retrieval_config", DEFAULT_RETRIEVAL_CONFIG)
 
     def _question_arc_ids(self, question: str) -> set[str]:
         """Find explicit story arc IDs mentioned in the user's question."""
@@ -164,9 +209,9 @@ class StoryQueryEngine:
         self,
         question: str,
         *,
-        n_results: int = INITIAL_RESULT_COUNT,
+        n_results: int = ROUTING_CANDIDATE_COUNT,
         where: dict[str, Any] | None = None,
-    ) -> list[tuple[str, dict[str, Any]]]:
+    ) -> list[Node]:
         query_embedding = embed_texts([question], task_type=RETRIEVAL_QUERY)[0]
         query_kwargs: dict[str, Any] = {
             "query_embeddings": [query_embedding],
@@ -188,13 +233,21 @@ class StoryQueryEngine:
             for document, metadata in zip(documents[0], metadatas[0], strict=False)
         ]
 
+    def _flat_results_to_nodes(self, results: dict[str, Any]) -> list[Node]:
+        documents = results.get("documents") or []
+        metadatas = results.get("metadatas") or []
+        return [
+            (document, dict(metadata or {}))
+            for document, metadata in zip(documents, metadatas, strict=False)
+        ]
+
     def _lexical_retrieve(
         self,
         question: str,
         *,
-        n_results: int = INITIAL_RESULT_COUNT,
+        n_results: int = ROUTING_CANDIDATE_COUNT,
         where: dict[str, Any] | None = None,
-    ) -> list[tuple[str, dict[str, Any]]]:
+    ) -> list[Node]:
         lexical_index = getattr(self, "lexical_index", None)
         if lexical_index is None:
             return []
@@ -222,8 +275,8 @@ class StoryQueryEngine:
 
     def _dedupe_nodes(
         self,
-        nodes: list[tuple[str, dict[str, Any]]],
-    ) -> list[tuple[str, dict[str, Any]]]:
+        nodes: list[Node],
+    ) -> list[Node]:
         deduped = []
         seen = set()
         for document, metadata in nodes:
@@ -238,9 +291,9 @@ class StoryQueryEngine:
         self,
         question: str,
         *,
-        n_results: int = INITIAL_RESULT_COUNT,
+        n_results: int = ROUTING_CANDIDATE_COUNT,
         where: dict[str, Any] | None = None,
-    ) -> list[tuple[str, dict[str, Any]]]:
+    ) -> list[Node]:
         dense_nodes = self._retrieve(question, n_results=n_results, where=where)
         lexical_nodes = self._lexical_retrieve(question, n_results=n_results, where=where)
         return self._dedupe_nodes([*dense_nodes, *lexical_nodes])
@@ -279,9 +332,9 @@ class StoryQueryEngine:
     def _expand_summaries_to_raw_scenes(
         self,
         question: str,
-        summaries: list[tuple[str, dict[str, Any]]],
-    ) -> list[tuple[str, dict[str, Any]]]:
-        expanded_nodes: list[tuple[str, dict[str, Any]]] = []
+        summaries: list[Node],
+    ) -> list[Node]:
+        expanded_nodes: list[Node] = []
         seen: set[tuple[str, int, int]] = set()
 
         for _, metadata in summaries:
@@ -291,9 +344,9 @@ class StoryQueryEngine:
 
             for document, raw_metadata in self._hybrid_retrieve(
                 question,
-                n_results=RAW_FALLBACK_RESULT_COUNT,
+                n_results=self._config().summary_child_candidate_count,
                 where=raw_filter,
-                ):
+            ):
                 if raw_metadata.get("summary_level") != 4:
                     continue
                 scene_start_value = raw_metadata.get("scene_start")
@@ -317,11 +370,247 @@ class StoryQueryEngine:
 
     def _raw_evidence_nodes(
         self,
-        nodes: list[tuple[str, dict[str, Any]]],
-    ) -> list[tuple[str, dict[str, Any]]]:
+        nodes: list[Node],
+    ) -> list[Node]:
         return [(document, metadata) for document, metadata in nodes if metadata.get("summary_level") == 4]
 
-    def _build_context_chunks(self, raw_nodes: list[tuple[str, dict[str, Any]]]) -> list[str]:
+    def _scene_span(self, metadata: dict[str, Any]) -> tuple[int, int] | None:
+        scene_start = metadata.get("scene_start")
+        scene_end = metadata.get("scene_end")
+        if not isinstance(scene_start, int) or not isinstance(scene_end, int):
+            scene_index = metadata.get("scene_index")
+            scene_start = scene_index
+            scene_end = scene_index
+
+        if (
+            not isinstance(scene_start, int)
+            or not isinstance(scene_end, int)
+            or scene_start < 0
+            or scene_end < scene_start
+        ):
+            return None
+        return scene_start, scene_end
+
+    def _raw_part_filter(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
+        parent_part_id = metadata.get("parent_part_id")
+        if isinstance(parent_part_id, str) and parent_part_id:
+            return {
+                "$and": [
+                    {"summary_level": 4},
+                    {"parent_part_id": parent_part_id},
+                ]
+            }
+
+        file_path = metadata.get("file_path")
+        if isinstance(file_path, str) and file_path:
+            return {
+                "$and": [
+                    {"summary_level": 4},
+                    {"file_path": file_path},
+                ]
+            }
+        return None
+
+    def _raw_nodes_for_part(self, question: str, metadata: dict[str, Any]) -> list[Node]:
+        raw_filter = self._raw_part_filter(metadata)
+        if raw_filter is None:
+            return []
+
+        collection_get = getattr(getattr(self, "collection", None), "get", None)
+        if callable(collection_get):
+            try:
+                results = collection_get(
+                    where=raw_filter,
+                    include=["documents", "metadatas"],
+                )
+                if isinstance(results, dict):
+                    return self._flat_results_to_nodes(results)
+            except (TypeError, ValueError):
+                pass
+
+        return self._hybrid_retrieve(
+            question,
+            n_results=max(self._config().raw_candidate_count, self._config().max_ranked_candidates),
+            where=raw_filter,
+        )
+
+    def _sort_raw_nodes(self, nodes: list[Node]) -> list[Node]:
+        def sort_key(node: Node) -> tuple[Any, ...]:
+            _, metadata = node
+            span = self._scene_span(metadata) or (-1, -1)
+            return (
+                metadata.get("canonical_story_order", 0),
+                metadata.get("parent_part_id", ""),
+                metadata.get("file_path", ""),
+                span[0],
+                span[1],
+            )
+
+        return sorted(nodes, key=sort_key)
+
+    def _expand_raw_neighbors(self, question: str, raw_nodes: list[Node]) -> list[Node]:
+        window = self._config().neighbor_scene_window
+        if window < 1:
+            return self._dedupe_nodes(raw_nodes)
+
+        expanded_nodes: list[Node] = list(raw_nodes)
+        part_cache: dict[tuple[Any, ...], list[Node]] = {}
+
+        for _, metadata in raw_nodes:
+            span = self._scene_span(metadata)
+            if span is None:
+                continue
+            part_filter = self._raw_part_filter(metadata)
+            if part_filter is None:
+                continue
+
+            part_cache_key = tuple(
+                sorted(
+                    (str(key), json.dumps(value, sort_keys=True))
+                    for key, value in part_filter.items()
+                )
+            )
+            if part_cache_key not in part_cache:
+                part_cache[part_cache_key] = self._sort_raw_nodes(
+                    self._raw_nodes_for_part(question, metadata)
+                )
+
+            window_start = span[0] - window
+            window_end = span[1] + window
+            for candidate in part_cache[part_cache_key]:
+                _, candidate_metadata = candidate
+                candidate_span = self._scene_span(candidate_metadata)
+                if candidate_span is None:
+                    continue
+                if candidate_span[0] <= window_end and candidate_span[1] >= window_start:
+                    expanded_nodes.append(candidate)
+
+        return self._dedupe_nodes(expanded_nodes)
+
+    def _normalized_speakers(self, metadata: dict[str, Any]) -> list[str]:
+        speakers = metadata.get("detected_speakers")
+        if isinstance(speakers, list):
+            return [str(speaker) for speaker in speakers if str(speaker)]
+        if isinstance(speakers, str):
+            return [speaker for speaker in speakers.split("|") if speaker]
+        return []
+
+    def _query_terms(self, question: str) -> list[str]:
+        terms = []
+        terms.extend(term for term in re.findall(r"[\u3040-\u30ff\u3400-\u9fff々〆〤ー]+", question) if len(term) >= 2)
+        terms.extend(term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9'_-]*", question) if len(term) >= 2)
+
+        unique_terms = []
+        seen = set()
+        for term in terms:
+            normalized = term.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_terms.append(term)
+        return unique_terms
+
+    def _metadata_match_score(self, question: str, metadata: dict[str, Any]) -> int:
+        score = 0
+        question_lower = question.casefold()
+
+        arc_id = metadata.get("arc_id")
+        if isinstance(arc_id, str) and arc_id and arc_id in question:
+            score += 1
+
+        part_name = metadata.get("part_name")
+        if isinstance(part_name, str) and part_name and part_name.casefold() in question_lower:
+            score += 1
+
+        episode_name = str(metadata.get("episode_name", ""))
+        episode_match = re.search(r"第(\d+)話", episode_name)
+        if episode_match:
+            episode_number = episode_match.group(1)
+            if (
+                f"episode {episode_number}" in question_lower
+                or f"ep {episode_number}" in question_lower
+                or f"第{episode_number}話" in question
+            ):
+                score += 1
+
+        return score
+
+    def _near_seed_score(
+        self,
+        metadata: dict[str, Any],
+        seed_nodes: list[Node],
+    ) -> int:
+        candidate_span = self._scene_span(metadata)
+        if candidate_span is None:
+            return 0
+
+        score = 0
+        window = self._config().neighbor_scene_window
+        for _, seed_metadata in seed_nodes:
+            if self._raw_part_filter(metadata) != self._raw_part_filter(seed_metadata):
+                continue
+            seed_span = self._scene_span(seed_metadata)
+            if seed_span is None:
+                continue
+            if candidate_span[0] <= seed_span[1] + window and candidate_span[1] >= seed_span[0] - window:
+                score += 1
+        return score
+
+    def _rank_raw_candidates(
+        self,
+        question: str,
+        expanded_question: str,
+        raw_nodes: list[Node],
+        seed_nodes: list[Node],
+    ) -> list[Node]:
+        terms = self._query_terms(expanded_question)
+        seed_rank = {
+            self._node_key(document, metadata): index
+            for index, (document, metadata) in enumerate(seed_nodes)
+        }
+
+        scored_nodes = []
+        for index, (document, metadata) in enumerate(raw_nodes):
+            searchable = " ".join(
+                [
+                    document,
+                    str(metadata.get("arc_id", "")),
+                    str(metadata.get("episode_name", "")),
+                    str(metadata.get("part_name", "")),
+                    " ".join(self._normalized_speakers(metadata)),
+                ]
+            )
+            searchable_lower = searchable.casefold()
+            matched_terms = sum(1 for term in terms if term.casefold() in searchable_lower)
+            speaker_matches = sum(
+                1
+                for speaker in self._normalized_speakers(metadata)
+                if speaker and speaker in expanded_question
+            )
+            key = self._node_key(document, metadata)
+            is_seed = key in seed_rank
+            score = (
+                matched_terms * 25
+                + speaker_matches * 30
+                + self._metadata_match_score(question, metadata) * 40
+                + self._near_seed_score(metadata, seed_nodes) * 10
+                + (20 if is_seed else 0)
+            )
+            scored_nodes.append(
+                (
+                    -score,
+                    seed_rank.get(key, len(seed_rank) + index),
+                    index,
+                    document,
+                    metadata,
+                )
+            )
+
+        scored_nodes.sort()
+        ranked_nodes = [(document, metadata) for _, _, _, document, metadata in scored_nodes]
+        return ranked_nodes[: self._config().max_ranked_candidates]
+
+    def _build_context_chunks(self, raw_nodes: list[Node]) -> list[str]:
         context_chunks = []
         for idx, (document, meta) in enumerate(raw_nodes):
             arc_id = meta.get("arc_id")
@@ -354,7 +643,7 @@ class StoryQueryEngine:
     def _answer_from_raw_evidence(
         self,
         question: str,
-        raw_nodes: list[tuple[str, dict[str, Any]]],
+        raw_nodes: list[Node],
     ) -> str:
         state_ledger_arc_ids = self._state_ledger_arc_ids(question, self._raw_arc_ids(raw_nodes))
         system_prompt = self._build_system_prompt(state_ledger_arc_ids)
@@ -372,10 +661,10 @@ class StoryQueryEngine:
         result = create_text_agent(system_prompt).run_sync(user_prompt)
         return result.output.strip() or "No answer generated."
 
-    def _raw_only_retrieve(self, question: str) -> list[tuple[str, dict[str, Any]]]:
+    def _raw_only_retrieve(self, question: str) -> list[Node]:
         return self._hybrid_retrieve(
             question,
-            n_results=RAW_FALLBACK_RESULT_COUNT,
+            n_results=self._config().raw_candidate_count,
             where={"summary_level": 4},
         )
 
@@ -383,20 +672,37 @@ class StoryQueryEngine:
         """Executes the Hierarchical RAG query flow."""
         safe_print("Searching vector index for relevant context...")
         expanded_question = self._expanded_question(question)
-        retrieved_nodes = self._hybrid_retrieve(expanded_question)
+        retrieved_nodes = self._hybrid_retrieve(
+            expanded_question,
+            n_results=self._config().routing_candidate_count,
+        )
 
         if not retrieved_nodes:
             safe_print("Initial retrieval returned no hits; trying raw-scene retrieval...")
-            raw_nodes = self._raw_evidence_nodes(self._raw_only_retrieve(expanded_question))
-        else:
-            raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
+        raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
+        raw_nodes.extend(self._raw_evidence_nodes(self._raw_only_retrieve(expanded_question)))
 
-        if not raw_nodes and retrieved_nodes:
-            safe_print("Initial retrieval found only summaries; expanding to child raw scenes...")
-            raw_nodes = self._expand_summaries_to_raw_scenes(expanded_question, retrieved_nodes)
+        if retrieved_nodes:
+            safe_print("Expanding summary hits to child raw scenes...")
+            raw_nodes.extend(self._expand_summaries_to_raw_scenes(expanded_question, retrieved_nodes))
+
+        raw_nodes = self._dedupe_nodes(raw_nodes)
 
         if not raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT
 
+        safe_print("Expanding neighboring raw evidence...")
+        expanded_raw_nodes = self._expand_raw_neighbors(expanded_question, raw_nodes)
+        ranked_raw_nodes = self._rank_raw_candidates(
+            question,
+            expanded_question,
+            expanded_raw_nodes,
+            raw_nodes,
+        )
+        final_raw_nodes = ranked_raw_nodes[: self._config().final_top_k]
+
+        if not final_raw_nodes:
+            return INSUFFICIENT_SOURCE_CONTEXT
+
         safe_print("Building answer context from raw source scenes...")
-        return self._answer_from_raw_evidence(question, raw_nodes)
+        return self._answer_from_raw_evidence(question, final_raw_nodes)

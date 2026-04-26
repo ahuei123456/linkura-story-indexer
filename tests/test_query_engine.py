@@ -2,11 +2,16 @@ from typing import Any
 
 from linkura_story_indexer import database
 from linkura_story_indexer.query import engine as query_engine
-from linkura_story_indexer.query.engine import INSUFFICIENT_SOURCE_CONTEXT, StoryQueryEngine
+from linkura_story_indexer.query.engine import (
+    INSUFFICIENT_SOURCE_CONTEXT,
+    RetrievalConfig,
+    StoryQueryEngine,
+)
 
 
 def make_engine() -> StoryQueryEngine:
     engine = StoryQueryEngine.__new__(StoryQueryEngine)
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0)
     engine.state_ledger = {
         "103": {"characters": [{"name": "Kaho Hinoshita"}]},
         "104": {"characters": [{"name": "Sayaka Murano"}]},
@@ -109,6 +114,76 @@ def test_hybrid_retrieve_concatenates_and_dedupes_dense_and_lexical(monkeypatch)
     assert engine._hybrid_retrieve("expanded question") == [dense_node, lexical_new]
 
 
+def raw_node(
+    document: str,
+    *,
+    scene_start: int,
+    scene_end: int | None = None,
+    parent_part_id: str = "103|Main|第3話『テスト』|2",
+    file_path: str = "story/part.md",
+    detected_speakers: str = "",
+) -> tuple[str, dict[str, Any]]:
+    return (
+        document,
+        {
+            "arc_id": "103",
+            "story_type": "Main",
+            "episode_name": "第3話『テスト』",
+            "part_name": "2",
+            "summary_level": 4,
+            "file_path": file_path,
+            "scene_index": scene_start,
+            "scene_start": scene_start,
+            "scene_end": scene_start if scene_end is None else scene_end,
+            "source_scene_count": 1,
+            "canonical_story_order": 30,
+            "parent_part_id": parent_part_id,
+            "detected_speakers": detected_speakers,
+        },
+    )
+
+
+def test_query_uses_configured_candidate_counts(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(
+        routing_candidate_count=21,
+        raw_candidate_count=41,
+        summary_child_candidate_count=31,
+        neighbor_scene_window=0,
+        final_top_k=5,
+    )
+    calls: list[dict[str, Any]] = []
+
+    summary_node = (
+        "part summary",
+        {
+            "arc_id": "103",
+            "summary_level": 3,
+            "parent_part_id": "103|Main|第3話『テスト』|2",
+        },
+    )
+    raw_child = raw_node("花帆: raw scene", scene_start=4)
+
+    def fake_hybrid_retrieve(
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        calls.append({"n_results": n_results, "where": where})
+        if where is None:
+            return [summary_node]
+        if where == {"summary_level": 4}:
+            return []
+        return [raw_child]
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+    monkeypatch.setattr(engine, "_answer_from_raw_evidence", lambda question, nodes: "answered")
+
+    assert engine.query("What happened?") == "answered"
+    assert [call["n_results"] for call in calls] == [21, 41, 31]
+
+
 def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
     engine = make_engine()
     query_calls: list[dict[str, Any]] = []
@@ -133,6 +208,8 @@ def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
                         ]
                     ],
                 }
+            if len(query_calls) == 2:
+                return {"documents": [[]], "metadatas": [[]]}
             return {
                 "documents": [["花帆: raw scene"]],
                 "metadatas": [
@@ -168,8 +245,8 @@ def test_query_expands_summary_hits_to_raw_scenes(monkeypatch):
     answer = engine.query("What happened?")
 
     assert answer == "answered from raw scene"
-    assert len(query_calls) == 2
-    assert query_calls[1]["where"] == {
+    assert len(query_calls) == 3
+    assert query_calls[2]["where"] == {
         "$and": [
             {"summary_level": 4},
             {"parent_part_id": "103|Main|第3話『テスト』|2"},
@@ -213,8 +290,75 @@ def test_query_reports_insufficient_source_context_without_raw_evidence(monkeypa
     answer = engine.query("What happened?")
 
     assert answer == INSUFFICIENT_SOURCE_CONTEXT
-    assert len(query_calls) == 2
+    assert len(query_calls) == 3
     assert agent_called is False
+
+
+def test_neighbor_expansion_pulls_bounded_scene_window(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=2)
+    hit = raw_node("scene 5", scene_start=5)
+    part_nodes = [raw_node(f"scene {index}", scene_start=index) for index in range(10)]
+
+    monkeypatch.setattr(engine, "_raw_nodes_for_part", lambda question, metadata: part_nodes)
+
+    expanded = engine._expand_raw_neighbors("question", [hit])
+    expanded_spans = {engine._scene_span(metadata) for _, metadata in expanded}
+
+    assert expanded_spans == {(3, 3), (4, 4), (5, 5), (6, 6), (7, 7)}
+
+
+def test_neighbor_expansion_dedupes_overlapping_windows(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=1)
+    hits = [raw_node("scene 5", scene_start=5), raw_node("scene 6", scene_start=6)]
+    part_nodes = [raw_node(f"scene {index}", scene_start=index) for index in range(4, 8)]
+
+    monkeypatch.setattr(engine, "_raw_nodes_for_part", lambda question, metadata: part_nodes)
+
+    expanded = engine._expand_raw_neighbors("question", hits)
+    keys = [engine._node_key(document, metadata) for document, metadata in expanded]
+
+    assert len(keys) == len(set(keys))
+    assert {engine._scene_span(metadata) for _, metadata in expanded} == {
+        (4, 4),
+        (5, 5),
+        (6, 6),
+        (7, 7),
+    }
+
+
+def test_rank_raw_candidates_prefers_exact_and_speaker_matches():
+    engine = make_engine()
+    seed = raw_node("unrelated direct candidate", scene_start=0)
+    exact_match = raw_node("花帆 talks about practice", scene_start=1, detected_speakers="花帆")
+
+    ranked = engine._rank_raw_candidates(
+        "What does 花帆 say?",
+        "What does 花帆 say? Kaho Hinoshita / 花帆",
+        [seed, exact_match],
+        [seed],
+    )
+
+    assert ranked[0] == exact_match
+
+
+def test_query_caps_final_raw_evidence_to_configured_top_k(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0, final_top_k=5)
+    raw_nodes = [raw_node(f"scene {index}", scene_start=index) for index in range(10)]
+    captured_counts = []
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: raw_nodes)
+
+    def fake_answer(question: str, nodes: list[tuple[str, dict[str, Any]]]) -> str:
+        captured_counts.append(len(nodes))
+        return "answered"
+
+    monkeypatch.setattr(engine, "_answer_from_raw_evidence", fake_answer)
+
+    assert engine.query("What happened?") == "answered"
+    assert captured_counts == [5]
 
 
 def test_fetch_raw_text_returns_only_requested_scene(tmp_path):
