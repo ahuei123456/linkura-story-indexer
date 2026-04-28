@@ -1,23 +1,82 @@
 import json
 import os
 from collections import defaultdict
+from typing import Any
 
 from ..console import safe_print
 from ..database import create_text_agent
 from ..models.story import StoryNode
 from ..story_order import StoryOrder, default_story_order
+from .manifest import (
+    SUMMARY_CACHE_SCHEMA_VERSION,
+    SummaryCacheContext,
+    hash_text,
+    stable_hash,
+)
+
+SUMMARIZATION_PROMPT_VERSION = "1"
 
 
 def episode_sort_key(ep_key_tuple: tuple) -> tuple:
     arc_id, story_type, episode_name = ep_key_tuple
     return default_story_order().chronological_episode_key(arc_id, story_type, episode_name)
 
+
+def _load_cache(cache_file: str) -> dict[str, Any]:
+    if not os.path.exists(cache_file):
+        return {}
+    with open(cache_file, encoding="utf-8") as file:
+        loaded = json.load(file)
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
+def _save_cache(cache_file: str, cache: dict[str, Any]) -> None:
+    with open(cache_file, "w", encoding="utf-8") as file:
+        json.dump(cache, file, ensure_ascii=False, indent=2)
+
+
+def _cached_summary(cache: dict[str, Any], cache_key: str, fingerprint: str) -> str | None:
+    entry = cache.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("fingerprint") != fingerprint:
+        return None
+    summary = entry.get("summary")
+    if not isinstance(summary, str):
+        return None
+    return summary
+
+
+def _store_cached_summary(
+    cache: dict[str, Any],
+    cache_key: str,
+    *,
+    summary: str,
+    fingerprint: str,
+    inputs: dict[str, Any],
+) -> None:
+    cache[cache_key] = {
+        "schema_version": SUMMARY_CACHE_SCHEMA_VERSION,
+        "fingerprint": fingerprint,
+        "summary": summary,
+        "inputs": inputs,
+    }
+
+
 class HierarchicalSummarizer:
     """Generates rolling summaries for stories to build the RAG hierarchy."""
 
-    def __init__(self, glossary: dict | None = None, story_order: StoryOrder | None = None):
+    def __init__(
+        self,
+        glossary: dict | None = None,
+        story_order: StoryOrder | None = None,
+        cache_context: SummaryCacheContext | None = None,
+    ):
         self.glossary = glossary
         self.story_order = story_order or default_story_order()
+        self.cache_context = cache_context
 
     def _generate_rolling_summary(self, current_text: str, prev_summary: str | None = None, level_name: str = "Part") -> str:
         """Calls the LLM to generate a summary using previous context to prevent drift."""
@@ -46,6 +105,72 @@ class HierarchicalSummarizer:
 
         result = create_text_agent(system_content).run_sync(prompt)
         return result.output.strip()
+
+    def _base_fingerprint_inputs(self, level: str) -> dict[str, Any]:
+        if self.cache_context is None:
+            return {
+                "level": level,
+                "summary_cache_schema_version": SUMMARY_CACHE_SCHEMA_VERSION,
+                "summarization_prompt_version": SUMMARIZATION_PROMPT_VERSION,
+                "glossary_hash": stable_hash(self.glossary),
+                "chat_model": "unconfigured",
+                "embedding_model": "unconfigured",
+                "parser_version": "unconfigured",
+            }
+        return {
+            "level": level,
+            "summary_cache_schema_version": self.cache_context.summary_cache_schema_version,
+            "summarization_prompt_version": self.cache_context.summarization_prompt_version,
+            "glossary_hash": self.cache_context.glossary_hash,
+            "chat_model": self.cache_context.chat_model,
+            "embedding_model": self.cache_context.embedding_model,
+            "parser_version": self.cache_context.parser_version,
+        }
+
+    def _source_file_hashes_for_nodes(self, nodes: list[StoryNode]) -> dict[str, str]:
+        grouped_text: dict[str, list[str]] = defaultdict(list)
+        for node in nodes:
+            grouped_text[node.metadata.file_path].append(node.text)
+
+        hashes = {}
+        for file_path, texts in sorted(grouped_text.items()):
+            if (
+                self.cache_context is not None
+                and file_path in self.cache_context.source_file_hashes
+            ):
+                hashes[file_path] = self.cache_context.source_file_hashes[file_path]
+            else:
+                hashes[file_path] = hash_text("\n\n---\n\n".join(texts))
+        return hashes
+
+    def _part_cache_inputs(
+        self,
+        *,
+        scenes: list[StoryNode],
+        part_text: str,
+        prev_summary: str | None,
+    ) -> dict[str, Any]:
+        return {
+            **self._base_fingerprint_inputs("part"),
+            "source_file_hashes": self._source_file_hashes_for_nodes(scenes),
+            "source_text_hash": hash_text(part_text),
+            "previous_summary_hash": hash_text(prev_summary) if prev_summary else "",
+        }
+
+    def _aggregate_cache_inputs(
+        self,
+        *,
+        level: str,
+        child_nodes: list[StoryNode],
+        combined_text: str,
+        prev_summary: str | None,
+    ) -> dict[str, Any]:
+        return {
+            **self._base_fingerprint_inputs(level),
+            "child_summary_hashes": [hash_text(node.text) for node in child_nodes],
+            "combined_text_hash": hash_text(combined_text),
+            "previous_summary_hash": hash_text(prev_summary) if prev_summary else "",
+        }
 
     def summarize_hierarchy(self, raw_nodes: list[StoryNode], cache_file: str = "summaries_cache.json") -> list[StoryNode]:
         """
@@ -78,10 +203,7 @@ class HierarchicalSummarizer:
         Tier 3 (Part) summaries using a rolling context window.
         Uses a local cache file to resume if processing fails halfway.
         """
-        cache: dict[str, str] = {}
-        if os.path.exists(cache_file):
-            with open(cache_file, encoding="utf-8") as f:
-                cache = json.load(f)
+        cache = _load_cache(cache_file)
 
         # Group by (arc_id, story_type, episode_name)
         episodes: dict[tuple, dict[str, list[StoryNode]]] = defaultdict(lambda: defaultdict(list))
@@ -123,13 +245,20 @@ class HierarchicalSummarizer:
                 base_meta = scenes[0].metadata.model_copy(deep=True)
                 base_meta.scene_index = -1 # Indicates it covers the whole part
 
-                if cache_key in cache:
+                # Gemini 3 has a massive context window, so we can concatenate the whole part
+                part_text = "\n\n---\n\n".join([n.text for n in scenes])
+                cache_inputs = self._part_cache_inputs(
+                    scenes=scenes,
+                    part_text=part_text,
+                    prev_summary=prev_summary,
+                )
+                fingerprint = stable_hash(cache_inputs)
+                cached = _cached_summary(cache, cache_key, fingerprint)
+
+                if cached is not None:
                     safe_print(f"Loading cached summary for {cache_key}...")
-                    current_summary = cache[cache_key]
+                    current_summary = cached
                 else:
-                    # Gemini 3 has a massive context window, so we can concatenate the whole part
-                    part_text = "\n\n---\n\n".join([n.text for n in scenes])
-                    
                     safe_print(f"Summarizing {cache_key}...")
                     
                     # Generate summary with rolling context
@@ -140,9 +269,14 @@ class HierarchicalSummarizer:
                     )
                     
                     # Save to cache
-                    cache[cache_key] = current_summary
-                    with open(cache_file, "w", encoding="utf-8") as f:
-                        json.dump(cache, f, ensure_ascii=False, indent=2)
+                    _store_cached_summary(
+                        cache,
+                        cache_key,
+                        summary=current_summary,
+                        fingerprint=fingerprint,
+                        inputs=cache_inputs,
+                    )
+                    _save_cache(cache_file, cache)
 
                 summary_node = StoryNode(
                     text=current_summary,
@@ -158,10 +292,7 @@ class HierarchicalSummarizer:
 
     def summarize_episodes(self, part_nodes: list[StoryNode], cache_file: str = "summaries_cache.json") -> list[StoryNode]:
         """Aggregates Tier 3 Part Summaries into Tier 2 Episode Summaries."""
-        cache: dict[str, str] = {}
-        if os.path.exists(cache_file):
-            with open(cache_file, encoding="utf-8") as f:
-                cache = json.load(f)
+        cache = _load_cache(cache_file)
 
         # Group by (arc_id, story_type, episode_name)
         episodes: dict[tuple, list[StoryNode]] = defaultdict(list)
@@ -194,11 +325,20 @@ class HierarchicalSummarizer:
             base_meta = parts[0].metadata.model_copy(deep=True)
             base_meta.part_name = "ALL_PARTS" # Represents the whole episode
 
-            if cache_key in cache:
+            combined_text = "\n\n---\n\n".join([f"Part: {n.metadata.part_name}\n{n.text}" for n in parts])
+            cache_inputs = self._aggregate_cache_inputs(
+                level="episode",
+                child_nodes=parts,
+                combined_text=combined_text,
+                prev_summary=prev_summary,
+            )
+            fingerprint = stable_hash(cache_inputs)
+            cached = _cached_summary(cache, cache_key, fingerprint)
+
+            if cached is not None:
                 safe_print(f"Loading cached episode summary for {cache_key}...")
-                current_summary = cache[cache_key]
+                current_summary = cached
             else:
-                combined_text = "\n\n---\n\n".join([f"Part: {n.metadata.part_name}\n{n.text}" for n in parts])
                 safe_print(f"Summarizing Episode: {cache_key}...")
                 
                 current_summary = self._generate_rolling_summary(
@@ -207,9 +347,14 @@ class HierarchicalSummarizer:
                     level_name="Episode"
                 )
                 
-                cache[cache_key] = current_summary
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(cache, f, ensure_ascii=False, indent=2)
+                _store_cached_summary(
+                    cache,
+                    cache_key,
+                    summary=current_summary,
+                    fingerprint=fingerprint,
+                    inputs=cache_inputs,
+                )
+                _save_cache(cache_file, cache)
 
             summary_nodes.append(StoryNode(
                 text=current_summary,
@@ -223,10 +368,7 @@ class HierarchicalSummarizer:
 
     def summarize_years(self, episode_nodes: list[StoryNode], cache_file: str = "summaries_cache.json") -> list[StoryNode]:
         """Aggregates Tier 2 Episode Summaries into Tier 1 Year Summaries."""
-        cache: dict[str, str] = {}
-        if os.path.exists(cache_file):
-            with open(cache_file, encoding="utf-8") as f:
-                cache = json.load(f)
+        cache = _load_cache(cache_file)
 
         # Group by arc_id (Year)
         years: dict[str, list[StoryNode]] = defaultdict(list)
@@ -266,11 +408,20 @@ class HierarchicalSummarizer:
             base_meta.episode_name = "ALL_EPISODES"
             base_meta.part_name = "ALL_PARTS"
 
-            if cache_key in cache:
+            combined_text = "\n\n---\n\n".join([f"Episode: {n.metadata.episode_name}\n{n.text}" for n in episodes])
+            cache_inputs = self._aggregate_cache_inputs(
+                level="year",
+                child_nodes=episodes,
+                combined_text=combined_text,
+                prev_summary=prev_summary,
+            )
+            fingerprint = stable_hash(cache_inputs)
+            cached = _cached_summary(cache, cache_key, fingerprint)
+
+            if cached is not None:
                 safe_print(f"Loading cached year summary for {cache_key}...")
-                current_summary = cache[cache_key]
+                current_summary = cached
             else:
-                combined_text = "\n\n---\n\n".join([f"Episode: {n.metadata.episode_name}\n{n.text}" for n in episodes])
                 safe_print(f"Summarizing Year: {cache_key}...")
                 
                 current_summary = self._generate_rolling_summary(
@@ -279,9 +430,14 @@ class HierarchicalSummarizer:
                     level_name="Year"
                 )
                 
-                cache[cache_key] = current_summary
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(cache, f, ensure_ascii=False, indent=2)
+                _store_cached_summary(
+                    cache,
+                    cache_key,
+                    summary=current_summary,
+                    fingerprint=fingerprint,
+                    inputs=cache_inputs,
+                )
+                _save_cache(cache_file, cache)
 
             summary_nodes.append(StoryNode(
                 text=current_summary,

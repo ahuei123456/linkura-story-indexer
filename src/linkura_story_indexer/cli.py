@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -10,13 +11,34 @@ from .database import (
     RETRIEVAL_DOCUMENT,
     EmbeddingDocument,
     embed_texts,
+    get_chat_model_name,
     get_chroma_collection,
+    get_embedding_model_name,
     initialize_settings,
 )
-from .indexer.chunker import build_retrieval_chunks
+from .indexer.chunker import (
+    CHUNKER_VERSION,
+    MAX_CHUNK_CHARS,
+    MIN_USEFUL_CHARS,
+    TARGET_CHUNK_CHARS,
+    build_retrieval_chunks,
+)
 from .indexer.extractor import StateExtractor
+from .indexer.manifest import (
+    RAW_EVIDENCE_SCHEMA_VERSION,
+    SUMMARY_CACHE_SCHEMA_VERSION,
+    ChunkerConfig,
+    IngestionManifest,
+    SummaryCacheContext,
+    VectorIds,
+    hash_files,
+    hash_json_file,
+    utc_timestamp,
+    write_manifest,
+)
+from .indexer.parser import PARSER_VERSION
 from .indexer.processor import StoryProcessor
-from .indexer.summarizer import HierarchicalSummarizer
+from .indexer.summarizer import SUMMARIZATION_PROMPT_VERSION, HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
@@ -155,15 +177,49 @@ def _metadata_for_node(node: StoryNode) -> dict:
     return metadata
 
 
+def _collection_ids(collection: Any) -> set[str]:
+    try:
+        records = collection.get(include=[])
+    except TypeError:
+        records = collection.get()
+    ids = records.get("ids", []) if isinstance(records, dict) else []
+    return {str(record_id) for record_id in ids}
+
+
+def _delete_collection_ids(collection: Any, ids: set[str]) -> None:
+    if not ids:
+        return
+    sorted_ids = sorted(ids)
+    batch_size = 500
+    for start in range(0, len(sorted_ids), batch_size):
+        collection.delete(ids=sorted_ids[start : start + batch_size])
+
+
+def _prune_stale_records(
+    *,
+    emitted_ids: set[str],
+    lexical_index: LexicalIndex | None,
+) -> int:
+    collection = get_chroma_collection()
+    stale_ids = _collection_ids(collection) - emitted_ids
+    _delete_collection_ids(collection, stale_ids)
+    if lexical_index is not None:
+        lexical_stale_ids = lexical_index.list_ids() - emitted_ids
+        lexical_index.delete_records(lexical_stale_ids)
+        stale_ids |= lexical_stale_ids
+    return len(stale_ids)
+
+
 def _upsert_story_nodes(
     nodes: list[StoryNode],
     *,
     progress_label: str,
     glossary: dict | None = None,
     lexical_index: LexicalIndex | None = None,
-) -> None:
+) -> list[str]:
     collection = get_chroma_collection()
     batch_size = 32
+    emitted_ids = []
 
     with Progress() as progress:
         task = progress.add_task(progress_label, total=len(nodes))
@@ -174,6 +230,7 @@ def _upsert_story_nodes(
             lexical_documents = [_lexical_document(node, glossary) for node in batch]
             metadatas = [_metadata_for_node(node) for node in batch]
             ids = [_node_id(node) for node in batch]
+            emitted_ids.extend(ids)
 
             collection.upsert(
                 ids=ids,
@@ -189,6 +246,7 @@ def _upsert_story_nodes(
                     search_texts=lexical_documents,
                 )
             progress.update(task, advance=len(batch))
+    return emitted_ids
 
 @app.command()
 def hello():
@@ -237,7 +295,12 @@ def extract_state(cache_file: str = typer.Option("summaries_cache.json", help="P
     extractor.extract_from_cache(output_file=output_file)
 
 @app.command()
-def ingest(story_dir: str = typer.Option("story", help="Directory containing story files")):
+def ingest(
+    story_dir: str = typer.Option("story", help="Directory containing story files"),
+    cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),
+    manifest_file: str = typer.Option("ingestion_manifest.json", help="Path to the ingestion manifest"),
+    prune: bool = typer.Option(True, "--prune/--no-prune", help="Delete indexed records not emitted by this run"),
+):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
     initialize_settings()
     
@@ -246,7 +309,8 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
         console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
         raise typer.Exit(1)
         
-    md_files = list(story_path.rglob("*.md"))
+    md_files = sorted(story_path.rglob("*.md"), key=lambda path: str(path))
+    source_file_hashes = hash_files(md_files)
     console.print(f"Found {len(md_files)} markdown files. Parsing scenes...")
     story_order = load_story_order(story_root=story_path)
 
@@ -269,30 +333,71 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
     
     glossary = None
     glossary_path = Path("glossary.json")
+    glossary_hash = hash_json_file(glossary_path)
     if glossary_path.exists():
         with open(glossary_path, encoding="utf-8") as f:
             glossary = json.load(f)
             console.print("Loaded glossary for translation invariants.")
 
     # Generate Tier 1-3 hierarchical summaries
-    summarizer = HierarchicalSummarizer(glossary=glossary, story_order=story_order)
-    summary_nodes = summarizer.summarize_hierarchy(raw_nodes)
+    chat_model = get_chat_model_name()
+    embedding_model = get_embedding_model_name()
+    cache_context = SummaryCacheContext(
+        source_file_hashes=source_file_hashes,
+        parser_version=PARSER_VERSION,
+        summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
+        glossary_hash=glossary_hash,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
+        summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,
+    )
+    summarizer = HierarchicalSummarizer(
+        glossary=glossary,
+        story_order=story_order,
+        cache_context=cache_context,
+    )
+    summary_nodes = summarizer.summarize_hierarchy(raw_nodes, cache_file=cache_file)
     
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     lexical_index = LexicalIndex(get_lexical_db_path())
     
-    _upsert_story_nodes(
+    raw_ids = _upsert_story_nodes(
         retrieval_chunks,
         progress_label="[green]Embedding raw retrieval chunks...",
         glossary=glossary,
         lexical_index=lexical_index,
     )
-    _upsert_story_nodes(
+    summary_ids = _upsert_story_nodes(
         summary_nodes,
         progress_label="[green]Embedding summaries...",
         glossary=glossary,
         lexical_index=lexical_index,
     )
+
+    emitted_ids = {*raw_ids, *summary_ids}
+    if prune:
+        pruned_count = _prune_stale_records(emitted_ids=emitted_ids, lexical_index=lexical_index)
+        console.print(f"Pruned {pruned_count} stale vector/lexical records.")
+
+    manifest = IngestionManifest(
+        timestamp=utc_timestamp(),
+        source_file_hashes=source_file_hashes,
+        parser_version=PARSER_VERSION,
+        chunker_version=CHUNKER_VERSION,
+        chunker_config=ChunkerConfig(
+            min_chars=MIN_USEFUL_CHARS,
+            target_chars=TARGET_CHUNK_CHARS,
+            max_chars=MAX_CHUNK_CHARS,
+        ),
+        summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
+        glossary_hash=glossary_hash,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
+        raw_evidence_schema_version=RAW_EVIDENCE_SCHEMA_VERSION,
+        summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,
+        vector_ids=VectorIds(raw=sorted(raw_ids), summaries=sorted(summary_ids)),
+    )
+    write_manifest(manifest_file, manifest)
     
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 

@@ -1,5 +1,7 @@
 import re
 
+PARSER_VERSION = "1"
+
 
 class StoryParser:
     """Parses story files into scenes and identifies dialogue/prose."""

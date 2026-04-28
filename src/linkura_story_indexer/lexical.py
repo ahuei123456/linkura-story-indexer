@@ -217,6 +217,21 @@ class LexicalIndex:
                     (record_id, search_text),
                 )
 
+    def list_ids(self) -> set[str]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id FROM lexical_records").fetchall()
+        return {str(row["id"]) for row in rows}
+
+    def delete_records(self, ids: Iterable[str]) -> None:
+        sorted_ids = sorted(set(ids))
+        if not sorted_ids:
+            return
+
+        with self._connect() as connection:
+            for record_id in sorted_ids:
+                connection.execute("DELETE FROM lexical_records WHERE id = ?", (record_id,))
+                connection.execute("DELETE FROM lexical_records_fts WHERE id = ?", (record_id,))
+
     def search(
         self,
         query: str,
