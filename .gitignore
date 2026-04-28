@@ -210,9 +210,11 @@ __marimo__/
 config.json
 
 .DS_Store
+.tmp/
 
 # Story Indexer Artifacts
 chroma_db/
 summaries_cache.json
 world_state.json
 lexical_index.db
+source_records.db

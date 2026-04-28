@@ -8,6 +8,7 @@ from typing import Any
 from ..console import safe_print
 from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
 from ..indexer.parser import StoryParser
+from ..indexer.source_store import SourceRecordStore
 from ..lexical import LexicalIndex, expand_query_with_glossary
 from .analysis import (
     CHRONOLOGY_INTENT,
@@ -73,6 +74,7 @@ class StoryQueryEngine:
     ):
         self.collection = get_chroma_collection()
         self.lexical_index = LexicalIndex()
+        self.source_store: Any = SourceRecordStore()
         self.retrieval_config = retrieval_config or DEFAULT_RETRIEVAL_CONFIG
 
         self.state_ledger: dict[str, Any] = {}
@@ -282,7 +284,33 @@ class StoryQueryEngine:
             filters.append({"scene_start": {"$lte": scene.end}})
             filters.append({"scene_end": {"$gte": scene.start}})
 
+        if summary_level == 4:
+            speaker_filter = self._speaker_filter_for_analysis(analysis)
+            if speaker_filter is not None:
+                filters.append(speaker_filter)
+
         return self._and_where(filters) or {"summary_level": summary_level}
+
+    def _speaker_filter_for_analysis(self, analysis: QueryAnalysis | None) -> dict[str, Any] | None:
+        if analysis is None or not analysis.character_names:
+            return None
+
+        source_store = getattr(self, "source_store", None)
+        if source_store is None:
+            return None
+
+        chunk_ids = []
+        seen = set()
+        for speaker in analysis.character_names:
+            for chunk_id in source_store.chunk_ids_for_speaker(speaker):
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                chunk_ids.append(chunk_id)
+
+        if not chunk_ids:
+            return None
+        return {"chunk_id": {"$in": chunk_ids}}
 
     def _combine_where(self, *filters: dict[str, Any] | None) -> dict[str, Any] | None:
         flattened: list[dict[str, Any]] = []
@@ -774,6 +802,46 @@ class StoryQueryEngine:
             return [speaker for speaker in speakers.split("|") if speaker]
         return []
 
+    def _question_quote(self, question: str) -> str | None:
+        match = re.search(r"[\"“「『](.+?)[\"”」』]", question)
+        if match:
+            return match.group(1)
+
+        match = re.search(r"\bwho said\s+(.+?)[?.!]*$", question, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" '\"“”「」『』")
+        return None
+
+    def _structured_answer(self, question: str, analysis: QueryAnalysis) -> str | None:
+        source_store = getattr(self, "source_store", None)
+        if source_store is None:
+            return None
+
+        question_lower = question.casefold()
+        if "who said" in question_lower:
+            quote = self._question_quote(question)
+            if not quote:
+                return None
+            matches = source_store.turns_matching_text(quote)
+            if not matches:
+                return None
+            speakers = []
+            seen = set()
+            for match in matches:
+                speaker = str(match.get("speaker", ""))
+                if speaker and speaker not in seen:
+                    speakers.append(speaker)
+                    seen.add(speaker)
+            if not speakers:
+                return None
+            return f"{', '.join(speakers)} said it."
+
+        if analysis.intent_bucket == QUANTITATIVE_INTENT and analysis.character_names:
+            speaker = analysis.character_names[0]
+            count = source_store.count_turns(speaker)
+            return f"{speaker} has {count} dialogue turns in the indexed source records."
+        return None
+
     def _query_terms(self, question: str) -> list[str]:
         terms = []
         terms.extend(term for term in re.findall(r"[\u3040-\u30ff\u3400-\u9fff々〆〤ー]+", question) if len(term) >= 2)
@@ -1030,6 +1098,9 @@ class StoryQueryEngine:
         """Executes the Hierarchical RAG query flow."""
         safe_print("Searching vector index by summary tiers and raw evidence...")
         analysis = analyze_query(question, self.glossary)
+        structured_answer = self._structured_answer(question, analysis)
+        if structured_answer is not None:
+            return structured_answer
         expanded_question = self._expanded_question(question)
         query_embedding = self._query_embedding(expanded_question)
         retrieved_nodes = self._tiered_retrieve(

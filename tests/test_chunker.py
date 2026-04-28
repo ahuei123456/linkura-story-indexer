@@ -37,6 +37,17 @@ def test_tiny_adjacent_scenes_are_coalesced_into_span_chunks(tmp_path: Path) -> 
     ]
     assert chunks[0].metadata.source_scene_count == 3
     assert chunks[0].metadata.detected_speakers == ["花帆", "さやか"]
+    assert chunks[0].metadata.speakers == ["花帆", "さやか"]
+    assert chunks[0].metadata.source_scene_ids == [
+        "scene:103|Main|第1話『花咲きたい！』|1:0",
+        "scene:103|Main|第1話『花咲きたい！』|1:1",
+        "scene:103|Main|第1話『花咲きたい！』|1:2",
+    ]
+    assert chunks[0].metadata.source_turn_ids == [
+        "turn:scene:103|Main|第1話『花咲きたい！』|1:0:0",
+        "turn:scene:103|Main|第1話『花咲きたい！』|1:1:0",
+        "turn:scene:103|Main|第1話『花咲きたい！』|1:2:0",
+    ]
 
 
 def test_chunks_do_not_cross_file_or_part_boundaries(tmp_path: Path) -> None:

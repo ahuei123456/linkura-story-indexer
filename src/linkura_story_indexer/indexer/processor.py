@@ -94,12 +94,31 @@ class StoryProcessor:
         nodes = []
         for i, scene_text in enumerate(scenes):
             meta = metadata_base.model_copy(deep=True)
+            scene_id = f"scene:{meta.parent_part_id}:{i}"
             meta.scene_index = i
             meta.scene_start = i
             meta.scene_end = i
             meta.source_scene_count = 1
-            meta.is_prose = not is_script
-            meta.detected_speakers = StoryParser.detect_speakers(scene_text)
-            nodes.append(StoryNode(text=scene_text, metadata=meta))
+            meta.source_scene_ids = [scene_id]
+            scene_is_script = is_script or StoryParser.is_script_format(scene_text)
+            meta.is_prose = not scene_is_script
+            if scene_is_script:
+                turns = StoryParser.parse_script_scene(scene_text, scene_id=scene_id)
+                beats = []
+            else:
+                turns, beats = StoryParser.parse_prose_scene(scene_text, scene_id=scene_id)
+
+            meta.source_turn_ids = [turn.turn_id for turn in turns]
+            meta.source_beat_ids = [beat.beat_id for beat in beats]
+            meta.speakers = StoryParser.ordered_unique_speakers(turns)
+            meta.detected_speakers = meta.speakers
+            nodes.append(
+                StoryNode(
+                    text=scene_text,
+                    metadata=meta,
+                    dialogue_turns=turns,
+                    narrative_beats=beats,
+                )
+            )
             
         return nodes
