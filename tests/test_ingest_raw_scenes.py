@@ -199,17 +199,27 @@ def test_upsert_raw_scenes_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     assert len(collection.records) == first_count
 
 
-def test_canonical_story_order_slots_side_stories_between_104_and_105(tmp_path: Path) -> None:
+def test_canonical_story_order_uses_chronological_manifest_order(tmp_path: Path) -> None:
     story_root = tmp_path / "story"
-    main_104_path = _write_story_file(
+    side_102_path = _write_story_file(
         story_root,
-        "104/第1話『未来への歌』/1.md",
-        "104 main",
+        "102/～Shades of Stars～/第1話.md",
+        "102 side",
     )
     side_103_path = _write_story_file(
         story_root,
         "103/～Shades of Stars～/第1話.md",
         "103 side",
+    )
+    main_103_path = _write_story_file(
+        story_root,
+        "103/第1話『花咲きたい！』/1.md",
+        "103 main",
+    )
+    main_104_path = _write_story_file(
+        story_root,
+        "104/第1話『未来への歌』/1.md",
+        "104 main",
     )
     main_105_path = _write_story_file(
         story_root,
@@ -218,8 +228,10 @@ def test_canonical_story_order_slots_side_stories_between_104_and_105(tmp_path: 
     )
     raw_nodes = [
         *StoryProcessor.process_file(main_105_path),
-        *StoryProcessor.process_file(side_103_path),
         *StoryProcessor.process_file(main_104_path),
+        *StoryProcessor.process_file(main_103_path),
+        *StoryProcessor.process_file(side_103_path),
+        *StoryProcessor.process_file(side_102_path),
     ]
 
     cli._assign_canonical_story_order(raw_nodes)
@@ -229,5 +241,7 @@ def test_canonical_story_order_slots_side_stories_between_104_and_105(tmp_path: 
         for node in raw_nodes
     }
 
-    assert order_by_label["104|Main"] < order_by_label["103|Side"]
-    assert order_by_label["103|Side"] < order_by_label["105|Main"]
+    assert order_by_label["102|Side"] < order_by_label["103|Side"]
+    assert order_by_label["103|Side"] < order_by_label["103|Main"]
+    assert order_by_label["103|Main"] < order_by_label["104|Main"]
+    assert order_by_label["104|Main"] < order_by_label["105|Main"]

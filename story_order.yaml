@@ -1,0 +1,392 @@
+chronological_order:
+  - story_type: Side
+    arcs: ["102", "103"]
+  - story_type: Main
+    arcs: ["103"]
+  - story_type: Main
+    arcs: ["104"]
+  - story_type: Main
+    arcs: ["105"]
+
+summary_order:
+  - story_type: Main
+    arcs: ["103"]
+  - story_type: Main
+    arcs: ["104"]
+  - story_type: Side
+    arcs: ["102", "103"]
+  - story_type: Main
+    arcs: ["105"]
+
+part_order_overrides:
+  - arc_id: "102"
+    story_type: Side
+    episode_name: "～Shades of Stars～"
+    parts:
+      - "第1話"
+      - "第2話"
+      - "第3話"
+      - "第4話"
+      - "第5話"
+      - "第6話"
+      - "第7話"
+      - "EP"
+
+  - arc_id: "103"
+    story_type: Side
+    episode_name: "～Shades of Stars～"
+    parts:
+      - "第1話"
+      - "第2話"
+      - "第3話"
+      - "第4話"
+      - "第5話"
+      - "第6話"
+      - "第7話"
+      - "EP"
+
+  - arc_id: "103"
+    story_type: Main
+    episode_name: "第3話『雨と、風と、太陽と』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "幕間"
+
+  - arc_id: "103"
+    story_type: Main
+    episode_name: "第6話『わがままon the ICE!!』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "幕間"
+
+  - arc_id: "103"
+    story_type: Main
+    episode_name: "第8話『あの日のこころ、明日のこころ』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "ED"
+
+  - arc_id: "103"
+    story_type: Main
+    episode_name: "第12話『期待はおもい！』"
+    parts:
+      - "幕間"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "ED1"
+      - "ED2"
+
+  - arc_id: "103"
+    story_type: Main
+    episode_name: "第18話『いずれ会う四度目の桜』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第1話『未来への歌』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "11"
+      - "12"
+      - "13"
+      - "14"
+      - "15"
+      - "16"
+      - "17"
+      - "18"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第3話『ゆえに、みらくらぱーく！あり』"
+    parts:
+      - "幕間"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第4話『昔もいまも、同じ空の下』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第7話『Link to the FRIENDS！』"
+    parts:
+      - "幕間"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "11"
+      - "12"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第9話『みらくる・ざ・ゆにばーす！』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第10話『Believe your love. Believe your live』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "WING1"
+      - "WING2"
+      - "WING3"
+      - "ED"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第11話『夢を咲かせる物語』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "WISH1"
+      - "WISH2"
+      - "ED1"
+      - "ED2"
+
+  - arc_id: "104"
+    story_type: Main
+    episode_name: "第13話『いずれ会う約束の桜』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "ED1"
+      - "ED2"
+      - "FINE"
+      - "WILL"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第1話『Brand New Stories!!』"
+    parts:
+      - "0"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "ED"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第3話『星に憧れて、花は舞う』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "S.R.K.1"
+      - "S.R.K.2"
+      - "S.R.K.3"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第5話『眠れる海のお姫様！』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "ABYSS"
+      - "LIGHT"
+      - "ED"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第6話『未来への花』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "BD"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第7話『わがまま色の存在証明』"
+    parts:
+      - "幕間"
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "ED"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第8話『今はまだ遥か幽かな光』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "VENUS"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第9話『ALL Link to YOU』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "FRIEND"
+      - "ED"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第11話『みんなで、花咲きたい！』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "10"
+      - "FLOWER"
+      - "TREE"
+
+  - arc_id: "105"
+    story_type: Main
+    episode_name: "第12話『ずっと花咲く僕らの桜』"
+    parts:
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - "5"
+      - "6"
+      - "7"
+      - "8"
+      - "9"
+      - "CODA1"
+      - "CODA2"
+      - "CODA3"
+      - "PERIOD"
+      - "___106"

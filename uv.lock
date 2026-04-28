@@ -753,6 +753,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["google"] },
+    { name = "pyyaml" },
     { name = "python-dotenv" },
     { name = "typer" },
 ]
@@ -771,6 +772,7 @@ requires-dist = [
     { name = "google-genai", specifier = ">=1.73.1" },
     { name = "pydantic", specifier = ">=2.13.3" },
     { name = "pydantic-ai-slim", extras = ["google"], specifier = ">=1.86.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "typer", specifier = ">=0.24.2" },
 ]
