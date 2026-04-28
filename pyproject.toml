@@ -9,6 +9,7 @@ dependencies = [
     "google-genai>=1.73.1",
     "pydantic>=2.13.3",
     "pydantic-ai-slim[google]>=1.86.1",
+    "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",
     "typer>=0.24.2",
 ]

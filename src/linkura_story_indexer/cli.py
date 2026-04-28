@@ -16,10 +16,11 @@ from .database import (
 from .indexer.chunker import build_retrieval_chunks
 from .indexer.extractor import StateExtractor
 from .indexer.processor import StoryProcessor
-from .indexer.summarizer import HierarchicalSummarizer, episode_sort_key, natural_sort_key
+from .indexer.summarizer import HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
+from .story_order import StoryOrder, default_story_order, load_story_order
 
 app = typer.Typer()
 console = Console()
@@ -38,18 +39,17 @@ def _node_id(node: StoryNode) -> str:
     return f"level:{node.summary_level}:{meta.parent_part_id}:{meta.scene_index}"
 
 
-def _story_order_key(node: StoryNode) -> tuple:
-    meta = node.metadata
-    return (
-        episode_sort_key((meta.arc_id, meta.story_type, meta.episode_name)),
-        natural_sort_key(meta.part_name),
-        meta.scene_index,
-        meta.file_path,
-    )
+def _story_order_key(node: StoryNode, story_order: StoryOrder | None = None) -> tuple:
+    order_config = story_order or default_story_order()
+    return order_config.chronological_node_key(node)
 
 
-def _assign_canonical_story_order(nodes: list[StoryNode]) -> None:
-    for order, node in enumerate(sorted(nodes, key=_story_order_key), start=1):
+def _assign_canonical_story_order(
+    nodes: list[StoryNode],
+    story_order: StoryOrder | None = None,
+) -> None:
+    order_config = story_order or default_story_order()
+    for order, node in enumerate(sorted(nodes, key=order_config.chronological_node_key), start=1):
         node.metadata.canonical_story_order = order
         node.metadata.story_order = order
 
@@ -248,6 +248,7 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
         
     md_files = list(story_path.rglob("*.md"))
     console.print(f"Found {len(md_files)} markdown files. Parsing scenes...")
+    story_order = load_story_order(story_root=story_path)
 
     raw_nodes = []
     with Progress() as progress:
@@ -257,7 +258,7 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
             raw_nodes.extend(nodes)
             progress.update(task, advance=1)
 
-    _assign_canonical_story_order(raw_nodes)
+    _assign_canonical_story_order(raw_nodes, story_order=story_order)
 
     retrieval_chunks = build_retrieval_chunks(raw_nodes)
 
@@ -274,7 +275,7 @@ def ingest(story_dir: str = typer.Option("story", help="Directory containing sto
             console.print("Loaded glossary for translation invariants.")
 
     # Generate Tier 1-3 hierarchical summaries
-    summarizer = HierarchicalSummarizer(glossary=glossary)
+    summarizer = HierarchicalSummarizer(glossary=glossary, story_order=story_order)
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes)
     
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")

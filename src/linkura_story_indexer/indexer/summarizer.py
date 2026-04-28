@@ -1,46 +1,23 @@
 import json
 import os
-import re
 from collections import defaultdict
 
 from ..console import safe_print
 from ..database import create_text_agent
 from ..models.story import StoryNode
+from ..story_order import StoryOrder, default_story_order
 
-
-def natural_sort_key(s: str) -> list:
-    """Sorts strings naturally, so 'Part 2' comes before 'Part 10'."""
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
 def episode_sort_key(ep_key_tuple: tuple) -> tuple:
-    """
-    Sorts episodes chronologically according to the user's specified narrative flow:
-    1. 103 Main
-    2. 104 Main
-    3. Side stories (102/103)
-    4. 105 Main
-    """
     arc_id, story_type, episode_name = ep_key_tuple
-    
-    if story_type == "Main":
-        if arc_id == "103":
-            group = 1
-        elif arc_id == "104":
-            group = 2
-        elif arc_id == "105":
-            group = 4
-        else:
-            group = 5
-    else:
-        group = 3
-        
-    return (group, int(arc_id) if arc_id.isdigit() else 999, natural_sort_key(episode_name))
+    return default_story_order().chronological_episode_key(arc_id, story_type, episode_name)
 
 class HierarchicalSummarizer:
     """Generates rolling summaries for stories to build the RAG hierarchy."""
 
-    def __init__(self, glossary: dict | None = None):
+    def __init__(self, glossary: dict | None = None, story_order: StoryOrder | None = None):
         self.glossary = glossary
+        self.story_order = story_order or default_story_order()
 
     def _generate_rolling_summary(self, current_text: str, prev_summary: str | None = None, level_name: str = "Part") -> str:
         """Calls the LLM to generate a summary using previous context to prevent drift."""
@@ -117,7 +94,7 @@ class HierarchicalSummarizer:
         summary_nodes = []
 
         # Process each episode sequentially, globally sorted
-        sorted_ep_keys = sorted(episodes.keys(), key=episode_sort_key)
+        sorted_ep_keys = sorted(episodes.keys(), key=lambda ep_key: self.story_order.summary_episode_key(*ep_key))
         
         prev_summary = None
         
@@ -126,7 +103,15 @@ class HierarchicalSummarizer:
             parts = episodes[ep_key]
             
             # Sort parts naturally
-            sorted_part_names = sorted(parts.keys(), key=natural_sort_key)
+            sorted_part_names = sorted(
+                parts.keys(),
+                key=lambda part_name: self.story_order.part_key(
+                    arc_id,
+                    story_type,
+                    episode_name,
+                    part_name,
+                ),
+            )
             
             for part_name in sorted_part_names:
                 cache_key = f"{arc_id}|{story_type}|{episode_name}|{part_name}"
@@ -187,7 +172,7 @@ class HierarchicalSummarizer:
 
         summary_nodes = []
         
-        sorted_ep_keys = sorted(episodes.keys(), key=episode_sort_key)
+        sorted_ep_keys = sorted(episodes.keys(), key=lambda ep_key: self.story_order.summary_episode_key(*ep_key))
         
         prev_summary = None
         for ep_key in sorted_ep_keys:
@@ -196,7 +181,15 @@ class HierarchicalSummarizer:
             parts = episodes[ep_key]
 
             # Sort parts to maintain narrative order
-            parts = sorted(parts, key=lambda n: natural_sort_key(n.metadata.part_name))
+            parts = sorted(
+                parts,
+                key=lambda n: self.story_order.part_key(
+                    n.metadata.arc_id,
+                    n.metadata.story_type,
+                    n.metadata.episode_name,
+                    n.metadata.part_name,
+                ),
+            )
             
             base_meta = parts[0].metadata.model_copy(deep=True)
             base_meta.part_name = "ALL_PARTS" # Represents the whole episode
@@ -242,8 +235,17 @@ class HierarchicalSummarizer:
 
         summary_nodes = []
         
-        # Sort years numerically
-        sorted_years = sorted(years.keys(), key=lambda x: int(x) if x.isdigit() else 999)
+        sorted_years = sorted(
+            years.keys(),
+            key=lambda arc_id: min(
+                self.story_order.summary_episode_key(
+                    node.metadata.arc_id,
+                    node.metadata.story_type,
+                    node.metadata.episode_name,
+                )
+                for node in years[arc_id]
+            ),
+        )
         
         prev_summary = None
         for arc_id in sorted_years:
@@ -251,7 +253,14 @@ class HierarchicalSummarizer:
             episodes = years[arc_id]
             
             # Sort episodes inside the year
-            episodes = sorted(episodes, key=lambda n: episode_sort_key((n.metadata.arc_id, n.metadata.story_type, n.metadata.episode_name)))
+            episodes = sorted(
+                episodes,
+                key=lambda n: self.story_order.summary_episode_key(
+                    n.metadata.arc_id,
+                    n.metadata.story_type,
+                    n.metadata.episode_name,
+                ),
+            )
             
             base_meta = episodes[0].metadata.model_copy(deep=True)
             base_meta.episode_name = "ALL_EPISODES"
