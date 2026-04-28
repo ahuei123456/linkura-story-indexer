@@ -230,7 +230,10 @@ part_order_overrides:
         load_story_order(config_path, story_root=story_root)
 
 
-def test_year_summary_sort_ignores_part_override_for_episode_summary_nodes(tmp_path: Path) -> None:
+def test_year_summary_sort_ignores_part_override_for_episode_summary_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     story_root = tmp_path / "story"
     episode_name = "第3話『雨と、風と、太陽と』"
     part_one_path = _write_story_file(story_root, f"103/{episode_name}/1.md")
@@ -260,7 +263,18 @@ part_order_overrides:
 
     summarizer = HierarchicalSummarizer(story_order=story_order)
 
+    def fake_generate(
+        self: HierarchicalSummarizer,
+        current_text: str,
+        prev_summary: str | None = None,
+        level_name: str = "Year",
+    ) -> str:
+        return f"{level_name} summary"
+
+    monkeypatch.setattr(HierarchicalSummarizer, "_generate_rolling_summary", fake_generate)
+
     year_summaries = summarizer.summarize_years([episode_summary], cache_file=str(tmp_path / "cache.json"))
 
     assert len(year_summaries) == 1
+    assert year_summaries[0].text == "Year summary"
     assert year_summaries[0].metadata.episode_name == "ALL_EPISODES"
