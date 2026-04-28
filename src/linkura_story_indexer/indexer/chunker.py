@@ -31,6 +31,17 @@ def _union_speakers(nodes: list[StoryNode]) -> list[str]:
     return speakers
 
 
+def _union_values(nodes: list[StoryNode], key: str) -> list[str]:
+    values = []
+    seen = set()
+    for node in nodes:
+        for value in getattr(node.metadata, key):
+            if value not in seen:
+                values.append(value)
+                seen.add(value)
+    return values
+
+
 def _make_chunk(nodes: list[StoryNode]) -> StoryNode:
     first = nodes[0]
     last = nodes[-1]
@@ -40,11 +51,18 @@ def _make_chunk(nodes: list[StoryNode]) -> StoryNode:
     meta.scene_end = last.metadata.scene_index
     meta.source_scene_count = len(nodes)
     meta.detected_speakers = _union_speakers(nodes)
+    meta.speakers = meta.detected_speakers
+    meta.source_scene_ids = _union_values(nodes, "source_scene_ids")
+    meta.source_turn_ids = _union_values(nodes, "source_turn_ids")
+    meta.source_beat_ids = _union_values(nodes, "source_beat_ids")
+    meta.chunk_id = f"chunk:{meta.parent_part_id}:{meta.scene_start}-{meta.scene_end}"
     meta.is_prose = all(node.metadata.is_prose for node in nodes)
     return StoryNode(
         text=SCENE_SEPARATOR.join(node.text for node in nodes),
         metadata=meta,
         summary_level=4,
+        dialogue_turns=[turn for node in nodes for turn in node.dialogue_turns],
+        narrative_beats=[beat for node in nodes for beat in node.narrative_beats],
     )
 
 

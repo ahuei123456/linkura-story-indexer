@@ -38,6 +38,7 @@ from .indexer.manifest import (
 )
 from .indexer.parser import PARSER_VERSION
 from .indexer.processor import StoryProcessor
+from .indexer.source_store import SourceRecordStore
 from .indexer.summarizer import SUMMARIZATION_PROMPT_VERSION, HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
@@ -51,6 +52,8 @@ console = Console()
 def _node_id(node: StoryNode) -> str:
     meta = node.metadata
     if node.summary_level == 4:
+        if meta.chunk_id:
+            return meta.chunk_id
         return f"chunk:{meta.parent_part_id}:{meta.scene_start}-{meta.scene_end}"
     if node.summary_level == 3:
         return f"summary:part:{meta.parent_part_id}"
@@ -173,6 +176,12 @@ def _metadata_for_node(node: StoryNode) -> dict:
     if not metadata.get("episode_number"):
         metadata["episode_number"] = _episode_number(node)
     metadata["detected_speakers"] = "|".join(node.metadata.detected_speakers)
+    metadata["speakers"] = "|".join(node.metadata.speakers)
+    metadata["source_scene_ids"] = "|".join(node.metadata.source_scene_ids)
+    metadata["source_turn_ids"] = "|".join(node.metadata.source_turn_ids)
+    metadata["source_beat_ids"] = "|".join(node.metadata.source_beat_ids)
+    if node.summary_level == 4 and not metadata.get("chunk_id"):
+        metadata["chunk_id"] = _node_id(node)
     metadata["summary_level"] = node.summary_level
     return metadata
 
@@ -325,6 +334,7 @@ def ingest(
     _assign_canonical_story_order(raw_nodes, story_order=story_order)
 
     retrieval_chunks = build_retrieval_chunks(raw_nodes)
+    SourceRecordStore().replace_all(raw_nodes, retrieval_chunks)
 
     console.print(
         f"Parsed {len(raw_nodes)} raw scenes and built {len(retrieval_chunks)} retrieval chunks. "

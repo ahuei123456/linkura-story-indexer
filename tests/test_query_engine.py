@@ -647,6 +647,59 @@ def test_rank_raw_candidates_prefers_exact_and_speaker_matches():
     assert ranked[0] == exact_match
 
 
+def test_analysis_where_can_filter_raw_chunks_by_source_store_speaker() -> None:
+    engine = make_engine()
+
+    class FakeSourceStore:
+        def chunk_ids_for_speaker(self, speaker: str) -> list[str]:
+            if speaker == "花帆":
+                return ["chunk:part:0-1"]
+            return []
+
+    engine.source_store = FakeSourceStore()
+    engine.glossary = {"characters": {"花帆": "Kaho Hinoshita"}}
+    analysis = analyze_query("What does Kaho say?", engine.glossary)
+
+    where = engine._where_for_analysis(analysis, summary_level=4)
+
+    assert where == {"$and": [{"summary_level": 4}, {"chunk_id": {"$in": ["chunk:part:0-1"]}}]}
+
+
+def test_structured_who_said_query_uses_source_turn_records() -> None:
+    engine = make_engine()
+
+    class FakeSourceStore:
+        def turns_matching_text(self, text: str) -> list[dict[str, Any]]:
+            assert text == "行こう"
+            return [{"speaker": "泉", "text": "「行こう」"}]
+
+        def count_turns(self, speaker: str) -> int:
+            raise AssertionError("count_turns should not be called")
+
+    engine.source_store = FakeSourceStore()
+    analysis = analyze_query("Who said 「行こう」?")
+
+    assert engine._structured_answer("Who said 「行こう」?", analysis) == "泉 said it."
+
+
+def test_structured_quantitative_query_counts_turns_by_speaker() -> None:
+    engine = make_engine()
+
+    class FakeSourceStore:
+        def count_turns(self, speaker: str) -> int:
+            assert speaker == "花帆"
+            return 3
+
+    engine.source_store = FakeSourceStore()
+    engine.glossary = {"characters": {"花帆": "Kaho Hinoshita"}}
+    analysis = analyze_query("How many turns does Kaho have?", engine.glossary)
+
+    assert (
+        engine._structured_answer("How many turns does Kaho have?", analysis)
+        == "花帆 has 3 dialogue turns in the indexed source records."
+    )
+
+
 def test_query_caps_final_raw_evidence_to_configured_top_k(monkeypatch):
     engine = make_engine()
     engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0, final_top_k=5)
