@@ -2,6 +2,7 @@ from itertools import groupby
 
 from ..models.story import StoryNode
 
+CHUNKER_VERSION = "1"
 MIN_USEFUL_CHARS = 500
 TARGET_CHUNK_CHARS = 1200
 MAX_CHUNK_CHARS = 1800
