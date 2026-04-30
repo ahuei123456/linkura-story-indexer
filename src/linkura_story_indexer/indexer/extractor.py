@@ -5,7 +5,7 @@ from typing import Any
 from pydantic_ai import Agent
 
 from ..console import safe_print
-from ..database import create_google_model
+from ..database import create_generation_model
 from ..models.state import WorldState
 
 
@@ -15,7 +15,7 @@ class StateExtractor:
     def __init__(self, cache_file: str = "summaries_cache.json"):
         self.cache_file = cache_file
         self.agent = Agent(
-            create_google_model(),
+            create_generation_model(),
             instructions=(
                 "You are a strict archivist extracting factual world-building data from a "
                 "story summary. Extract any characters with their roles, nicknames, and "
@@ -36,7 +36,14 @@ class StateExtractor:
 
         # Map phase: Extract facts per Episode
         # We process Episodes (Tier 2) because they offer a good balance of detail and context
-        episode_summaries = {k: v for k, v in cache.items() if k.startswith("EPISODE|")}
+        episode_summaries = {}
+        for key, value in cache.items():
+            if not key.startswith("EPISODE|"):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("summary"), str):
+                episode_summaries[key] = value["summary"]
+            elif isinstance(value, str):
+                episode_summaries[key] = value
         
         if not episode_summaries:
             safe_print("No Episode summaries found in cache. Did ingestion complete Tier 2?")

@@ -44,6 +44,8 @@ def _cache_context(path: Path, **overrides: Any) -> SummaryCacheContext:
         "summarization_prompt_version": SUMMARIZATION_PROMPT_VERSION,
         "glossary_hash": "glossary-hash-1",
         "chat_model": "chat-model-1",
+        "generation_provider": "google",
+        "generation_model": "chat-model-1",
         "embedding_model": "embedding-model-1",
         "summary_cache_schema_version": SUMMARY_CACHE_SCHEMA_VERSION,
     }
@@ -65,6 +67,8 @@ def test_manifest_serializes_required_fields_with_expected_types() -> None:
         summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
         glossary_hash="glossary-hash",
         chat_model="chat-model",
+        generation_provider="google",
+        generation_model="chat-model",
         embedding_model="embedding-model",
         raw_evidence_schema_version=RAW_EVIDENCE_SCHEMA_VERSION,
         summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,
@@ -86,6 +90,8 @@ def test_manifest_serializes_required_fields_with_expected_types() -> None:
     assert isinstance(data["summarization_prompt_version"], str)
     assert isinstance(data["glossary_hash"], str)
     assert isinstance(data["chat_model"], str)
+    assert data["generation_provider"] == "google"
+    assert data["generation_model"] == "chat-model"
     assert isinstance(data["embedding_model"], str)
     assert isinstance(data["raw_evidence_schema_version"], str)
     assert isinstance(data["summary_cache_schema_version"], str)
@@ -100,6 +106,8 @@ def test_manifest_serializes_required_fields_with_expected_types() -> None:
         ("summarization_prompt_version", "prompt-version-2"),
         ("glossary_hash", "glossary-hash-2"),
         ("chat_model", "chat-model-2"),
+        ("generation_provider", "openai"),
+        ("generation_model", "gpt-5-mini"),
         ("embedding_model", "embedding-model-2"),
         ("summary_cache_schema_version", "summary-schema-2"),
     ],
@@ -156,6 +164,56 @@ def test_summary_cache_invalidates_when_tracked_input_changes(
     )
 
     assert len(calls) == 2
+
+
+def test_summarizer_uses_configured_generation_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    class FakeAgent:
+        def __init__(self, instructions: str) -> None:
+            self.instructions = instructions
+
+        def run_sync(self, prompt: str) -> Any:
+            calls.append({"instructions": self.instructions, "prompt": prompt})
+
+            class Result:
+                output = " generated summary "
+
+            return Result()
+
+    def fake_create_generation_text_agent(instructions: str) -> FakeAgent:
+        return FakeAgent(instructions)
+
+    monkeypatch.setattr(
+        "linkura_story_indexer.indexer.summarizer.create_generation_text_agent",
+        fake_create_generation_text_agent,
+    )
+
+    summary = HierarchicalSummarizer()._generate_rolling_summary(
+        "花帆: こんにちは",
+        level_name="Part",
+    )
+
+    assert summary == "generated summary"
+    assert len(calls) == 1
+    assert "expert archivist" in calls[0]["instructions"]
+    assert "花帆: こんにちは" in calls[0]["prompt"]
+
+
+def test_default_generation_context_preserves_legacy_summary_fingerprint_shape(
+    tmp_path: Path,
+) -> None:
+    path = _write_story_file(
+        tmp_path / "story",
+        "103/第1話『花咲きたい！』/1.md",
+        "花帆: こんにちは",
+    )
+    context = _cache_context(path)
+
+    inputs = HierarchicalSummarizer(cache_context=context)._base_fingerprint_inputs("part")
+
+    assert "generation_provider" not in inputs
+    assert "generation_model" not in inputs
 
 
 @pytest.mark.parametrize(
