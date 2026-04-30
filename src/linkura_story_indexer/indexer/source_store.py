@@ -25,6 +25,11 @@ def _chunk_id(node: StoryNode) -> str:
     return f"chunk:{meta.parent_part_id}:{meta.scene_start}-{meta.scene_end}"
 
 
+def _metadata_order(metadata: dict[str, Any]) -> int:
+    order = metadata.get("story_order", metadata.get("canonical_story_order"))
+    return int(order) if isinstance(order, int) else 0
+
+
 class SourceRecordStore:
     """Persists atomic source scenes, dialogue turns, narrative beats, and chunk provenance."""
 
@@ -85,6 +90,20 @@ class SourceRecordStore:
                     scene_id TEXT NOT NULL,
                     scene_index INTEGER NOT NULL,
                     PRIMARY KEY (chunk_id, scene_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS state_extraction_cache (
+                    scene_id TEXT PRIMARY KEY,
+                    scene_hash TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    generation_provider TEXT NOT NULL,
+                    generation_model TEXT NOT NULL,
+                    facts_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -210,6 +229,120 @@ class SourceRecordStore:
                     """,
                     (chunk_id, scene_id, chunk.metadata.scene_start + offset),
                 )
+
+    def iter_scenes(self) -> list[dict[str, Any]]:
+        """Returns persisted raw scenes in deterministic story order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT scene_id, file_path, parent_part_id, scene_index, text, metadata_json
+                FROM source_scenes
+                ORDER BY file_path, scene_index
+                """
+            ).fetchall()
+
+        scenes = []
+        for row in rows:
+            metadata = json.loads(str(row["metadata_json"]))
+            scenes.append(
+                {
+                    "scene_id": row["scene_id"],
+                    "file_path": row["file_path"],
+                    "parent_part_id": row["parent_part_id"],
+                    "scene_index": row["scene_index"],
+                    "text": row["text"],
+                    "metadata": metadata,
+                }
+            )
+        return sorted(
+            scenes,
+            key=lambda scene: (
+                _metadata_order(scene["metadata"]),
+                str(scene["file_path"]),
+                int(scene["scene_index"]),
+            ),
+        )
+
+    def cached_state_facts(
+        self,
+        *,
+        scene_id: str,
+        scene_hash: str,
+        schema_version: int,
+        prompt_version: str,
+        generation_provider: str,
+        generation_model: str,
+    ) -> list[dict[str, Any]] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT facts_json
+                FROM state_extraction_cache
+                WHERE scene_id = ?
+                  AND scene_hash = ?
+                  AND schema_version = ?
+                  AND prompt_version = ?
+                  AND generation_provider = ?
+                  AND generation_model = ?
+                """,
+                (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row["facts_json"]))
+        return value if isinstance(value, list) else None
+
+    def upsert_state_facts_cache(
+        self,
+        *,
+        scene_id: str,
+        scene_hash: str,
+        schema_version: int,
+        prompt_version: str,
+        generation_provider: str,
+        generation_model: str,
+        facts: list[dict[str, Any]],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO state_extraction_cache (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                    facts_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    scene_hash = excluded.scene_hash,
+                    schema_version = excluded.schema_version,
+                    prompt_version = excluded.prompt_version,
+                    generation_provider = excluded.generation_provider,
+                    generation_model = excluded.generation_model,
+                    facts_json = excluded.facts_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                    _stable_json(facts),
+                ),
+            )
 
     def chunk_ids_for_speaker(self, speaker: str) -> list[str]:
         with self._connect() as connection:
