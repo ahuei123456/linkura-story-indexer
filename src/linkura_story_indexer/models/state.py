@@ -1,22 +1,48 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
-class HonorificFact(BaseModel):
-    target_character: str = Field(..., description="The character being spoken to or about")
-    honorific: str = Field(..., description="The honorific or nickname used (e.g., '-chan')")
+class ExtractedStateFact(BaseModel):
+    """Atomic fact as emitted by the scene-level extraction model."""
 
-class CharacterFact(BaseModel):
-    name: str
-    nicknames: list[str] = Field(default_factory=list)
-    role: str = Field(..., description="e.g., '1st Year Student', 'Club President'")
-    honorifics_used: list[HonorificFact] = Field(
-        default_factory=list, 
-        description="List of honorifics or nicknames this character uses for others"
+    subject: str = Field(..., description="Entity the fact is about")
+    predicate: str = Field(..., description="Relationship or state name")
+    object: str = Field(..., description="Value or target of the fact")
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
+    extracted_quote: str = Field(
+        ...,
+        description="Exact substring copied from the source scene that supports this fact",
     )
-    is_active: bool = True
 
-class WorldState(BaseModel):
-    arc_id: str
-    characters: list[CharacterFact]
-    locations: list[str] = Field(default_factory=list, description="Known areas in the story")
-    important_groups: list[str] = Field(default_factory=list, description="e.g., 'Cerise Bouquet'")
+    @field_validator("subject", "predicate", "object", "extracted_quote")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("fact fields must not be blank")
+        return stripped
+
+
+class SceneStateExtraction(BaseModel):
+    """Facts extracted from one raw source scene."""
+
+    facts: list[ExtractedStateFact] = Field(default_factory=list)
+
+
+class StateFact(ExtractedStateFact):
+    """Source-backed temporal ledger fact."""
+
+    arc: str
+    episode: str
+    part: str
+    scene: int
+    valid_from: int
+    valid_to: int | None = None
+    file_path: str
+    scene_index: int
+
+
+class StateLedger(BaseModel):
+    """World-state ledger stored as source-backed fact records."""
+
+    schema_version: int = 2
+    facts: list[StateFact] = Field(default_factory=list)

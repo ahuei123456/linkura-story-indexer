@@ -97,7 +97,8 @@ class StoryQueryEngine:
         """Find explicit story arc IDs mentioned in the user's question."""
         if not self.state_ledger:
             return set()
-        return {arc_id for arc_id in re.findall(r"\b\d{3}\b", question) if arc_id in self.state_ledger}
+        ledger_arc_ids = self._state_ledger_available_arc_ids()
+        return {arc_id for arc_id in re.findall(r"\b\d{3}\b", question) if arc_id in ledger_arc_ids}
 
     def _state_ledger_arc_ids(self, question: str, retrieved_arc_ids: set[str]) -> set[str]:
         explicit_arc_ids = self._question_arc_ids(question)
@@ -105,7 +106,88 @@ class StoryQueryEngine:
             return explicit_arc_ids
         return retrieved_arc_ids
 
-    def _build_system_prompt(self, arc_ids: set[str]) -> str:
+    def _state_ledger_available_arc_ids(self) -> set[str]:
+        if not isinstance(self.state_ledger, dict):
+            return set()
+        facts = self.state_ledger.get("facts")
+        if isinstance(facts, list):
+            return {
+                fact["arc"]
+                for fact in facts
+                if isinstance(fact, dict) and isinstance(fact.get("arc"), str)
+            }
+        return {arc_id for arc_id in self.state_ledger if re.fullmatch(r"\d{3}", str(arc_id))}
+
+    def _state_ledger_facts(self) -> list[dict[str, Any]]:
+        if not isinstance(self.state_ledger, dict):
+            return []
+        facts = self.state_ledger.get("facts")
+        if isinstance(facts, list):
+            return [dict(fact) for fact in facts if isinstance(fact, dict)]
+        legacy_facts = []
+        for arc_id, value in self.state_ledger.items():
+            if re.fullmatch(r"\d{3}", str(arc_id)):
+                legacy_facts.append(
+                    {
+                        "arc": arc_id,
+                        "subject": "legacy_world_state",
+                        "predicate": "summary",
+                        "object": value,
+                        "valid_from": 0,
+                        "valid_to": None,
+                    }
+                )
+        return legacy_facts
+
+    def _state_ledger_slice(
+        self,
+        arc_ids: set[str],
+        analysis: QueryAnalysis | None = None,
+    ) -> list[dict[str, Any]]:
+        facts = [fact for fact in self._state_ledger_facts() if fact.get("arc") in arc_ids]
+        if analysis is None or analysis.temporal_constraint is None:
+            return facts
+
+        story_order = self._resolve_temporal_story_order(analysis)
+        if story_order is None:
+            return facts
+
+        operator = analysis.temporal_constraint.operator
+        if operator == "as_of":
+            active_facts = []
+            for fact in facts:
+                valid_to = self._fact_valid_to(fact)
+                if self._fact_valid_from(fact) <= story_order and (
+                    valid_to is None or story_order < valid_to
+                ):
+                    active_facts.append(fact)
+            return active_facts
+        if operator == "before":
+            return [fact for fact in facts if self._fact_valid_from(fact) < story_order]
+        if operator == "after":
+            later_facts = []
+            for fact in facts:
+                valid_to = self._fact_valid_to(fact)
+                if self._fact_valid_from(fact) > story_order or (
+                    valid_to is not None and valid_to > story_order
+                ):
+                    later_facts.append(fact)
+            return later_facts
+        return facts
+
+    def _fact_valid_from(self, fact: dict[str, Any]) -> int:
+        value = fact.get("valid_from")
+        return int(value) if isinstance(value, int) else 0
+
+    def _fact_valid_to(self, fact: dict[str, Any]) -> int | None:
+        value = fact.get("valid_to")
+        return int(value) if isinstance(value, int) else None
+
+    def _build_system_prompt(
+        self,
+        arc_ids: set[str],
+        analysis: QueryAnalysis | None = None,
+    ) -> str:
         """Builds the system prompt with invariants and state ledger."""
         prompt = (
             "You are an expert lore-keeper and archivist for a Japanese narrative story.\n"
@@ -124,19 +206,19 @@ class StoryQueryEngine:
                 for jp, en in terms.items():
                     prompt += f" - {jp} -> {en}\n"
 
-        if self.state_ledger and arc_ids:
+        ledger_facts = self._state_ledger_slice(arc_ids, analysis)
+        if ledger_facts:
             prompt += "\n--- STATE LEDGER (FACTS) ---\n"
-            for arc_id in arc_ids:
-                if arc_id in self.state_ledger:
-                    prompt += f"\nYEAR {arc_id} FACTS:\n"
-                    prompt += (
-                        json.dumps(
-                            self.state_ledger[arc_id],
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        + "\n"
-                    )
+            prompt += (
+                "Use these source-backed facts only for routing and consistency. "
+                "Final answer citations must still come from retrieved raw evidence labels.\n"
+            )
+            for arc_id in sorted(arc_ids):
+                arc_facts = [fact for fact in ledger_facts if fact.get("arc") == arc_id]
+                if not arc_facts:
+                    continue
+                prompt += f"\nYEAR {arc_id} FACTS:\n"
+                prompt += json.dumps(arc_facts, ensure_ascii=False, separators=(",", ":")) + "\n"
 
         return prompt
 
@@ -991,9 +1073,12 @@ class StoryQueryEngine:
         self,
         question: str,
         raw_nodes: list[Node],
+        analysis: QueryAnalysis | None = None,
     ) -> str:
+        if analysis is None:
+            analysis = analyze_query(question, self.glossary)
         state_ledger_arc_ids = self._state_ledger_arc_ids(question, self._raw_arc_ids(raw_nodes))
-        system_prompt = self._build_system_prompt(state_ledger_arc_ids)
+        system_prompt = self._build_system_prompt(state_ledger_arc_ids, analysis)
         combined_context = "\n".join(self._build_context_chunks(raw_nodes))
 
         user_prompt = (

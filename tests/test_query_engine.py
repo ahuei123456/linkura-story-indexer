@@ -14,8 +14,39 @@ def make_engine() -> StoryQueryEngine:
     engine = StoryQueryEngine.__new__(StoryQueryEngine)
     engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0)
     engine.state_ledger = {
-        "103": {"characters": [{"name": "Kaho Hinoshita"}]},
-        "104": {"characters": [{"name": "Sayaka Murano"}]},
+        "schema_version": 2,
+        "facts": [
+            {
+                "subject": "Kaho Hinoshita",
+                "predicate": "status",
+                "object": "active",
+                "arc": "103",
+                "episode": "第1話『花咲きたい！』",
+                "part": "1",
+                "scene": 0,
+                "valid_from": 1,
+                "valid_to": None,
+                "confidence": 1.0,
+                "extracted_quote": "Kaho",
+                "file_path": "story/103/第1話『花咲きたい！』/1.md",
+                "scene_index": 0,
+            },
+            {
+                "subject": "Sayaka Murano",
+                "predicate": "status",
+                "object": "active",
+                "arc": "104",
+                "episode": "第1話『未来への歌』",
+                "part": "1",
+                "scene": 0,
+                "valid_from": 10,
+                "valid_to": None,
+                "confidence": 1.0,
+                "extracted_quote": "Sayaka",
+                "file_path": "story/104/第1話『未来への歌』/1.md",
+                "scene_index": 0,
+            },
+        ],
     }
     engine.glossary = None
     return engine
@@ -28,8 +59,9 @@ def test_system_prompt_restores_raw_source_claim_and_compacts_ledger():
 
     assert "based strictly on the provided raw source text" in prompt
     assert "Some retrieved context may be generated summaries" not in prompt
-    assert '{"characters":[{"name":"Kaho Hinoshita"}]}' in prompt
-    assert '\n  "characters"' not in prompt
+    assert '"subject":"Kaho Hinoshita"' in prompt
+    assert '"extracted_quote":"Kaho"' in prompt
+    assert '\n  "subject"' not in prompt
     assert "YEAR 104 FACTS" not in prompt
 
 
@@ -47,6 +79,57 @@ def test_state_ledger_arc_ids_falls_back_to_retrieved_arcs():
     arc_ids = engine._state_ledger_arc_ids("What happened to Kaho?", {"103", "104"})
 
     assert arc_ids == {"103", "104"}
+
+
+def test_state_ledger_slice_respects_as_of_temporal_constraint():
+    engine = make_engine()
+    engine.state_ledger = {
+        "schema_version": 2,
+        "facts": [
+            {
+                "subject": "花帆",
+                "predicate": "honorific_used_for:さやか",
+                "object": "ちゃん",
+                "arc": "103",
+                "episode": "第1話『花咲きたい！』",
+                "part": "1",
+                "scene": 0,
+                "valid_from": 1,
+                "valid_to": 10,
+                "confidence": 0.9,
+                "extracted_quote": "さやかちゃん",
+                "file_path": "story/103/第1話『花咲きたい！』/1.md",
+                "scene_index": 0,
+            },
+            {
+                "subject": "花帆",
+                "predicate": "honorific_used_for:さやか",
+                "object": "さん",
+                "arc": "103",
+                "episode": "第2話『Dream Match！』",
+                "part": "1",
+                "scene": 0,
+                "valid_from": 10,
+                "valid_to": None,
+                "confidence": 0.9,
+                "extracted_quote": "さやかさん",
+                "file_path": "story/103/第2話『Dream Match！』/1.md",
+                "scene_index": 0,
+            },
+        ],
+    }
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, list[dict[str, int]]]:
+            return {"metadatas": [{"story_order": 5}]}
+
+    engine.collection = FakeCollection()
+    analysis = analyze_query("As of episode 1, what does Kaho call Sayaka?")
+
+    prompt = engine._build_system_prompt({"103"}, analysis)
+
+    assert "さやかちゃん" in prompt
+    assert "さやかさん" not in prompt
 
 
 def test_retrieve_uses_query_embedding_task_type(monkeypatch):

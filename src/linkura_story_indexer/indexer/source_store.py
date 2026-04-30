@@ -25,6 +25,11 @@ def _chunk_id(node: StoryNode) -> str:
     return f"chunk:{meta.parent_part_id}:{meta.scene_start}-{meta.scene_end}"
 
 
+def _metadata_order(metadata: dict[str, Any]) -> int:
+    order = metadata.get("story_order", metadata.get("canonical_story_order"))
+    return int(order) if isinstance(order, int) else 0
+
+
 class SourceRecordStore:
     """Persists atomic source scenes, dialogue turns, narrative beats, and chunk provenance."""
 
@@ -210,6 +215,39 @@ class SourceRecordStore:
                     """,
                     (chunk_id, scene_id, chunk.metadata.scene_start + offset),
                 )
+
+    def iter_scenes(self) -> list[dict[str, Any]]:
+        """Returns persisted raw scenes in deterministic story order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT scene_id, file_path, parent_part_id, scene_index, text, metadata_json
+                FROM source_scenes
+                ORDER BY file_path, scene_index
+                """
+            ).fetchall()
+
+        scenes = []
+        for row in rows:
+            metadata = json.loads(str(row["metadata_json"]))
+            scenes.append(
+                {
+                    "scene_id": row["scene_id"],
+                    "file_path": row["file_path"],
+                    "parent_part_id": row["parent_part_id"],
+                    "scene_index": row["scene_index"],
+                    "text": row["text"],
+                    "metadata": metadata,
+                }
+            )
+        return sorted(
+            scenes,
+            key=lambda scene: (
+                _metadata_order(scene["metadata"]),
+                str(scene["file_path"]),
+                int(scene["scene_index"]),
+            ),
+        )
 
     def chunk_ids_for_speaker(self, speaker: str) -> list[str]:
         with self._connect() as connection:

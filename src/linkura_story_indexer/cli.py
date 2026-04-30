@@ -299,13 +299,16 @@ def chat():
     console.print("[bold blue]Chat session ended. Goodbye![/bold blue]")
 
 @app.command()
-def extract_state(cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"), output_file: str = typer.Option("world_state.json", help="Path to output the world state JSON")):
-    """Extracts facts from cached Episode summaries to build the State Ledger."""
+def extract_state(
+    source_db: str = typer.Option("source_records.db", help="Path to the raw source records DB"),
+    output_file: str = typer.Option("world_state.json", help="Path to output the world state JSON"),
+):
+    """Extracts source-backed facts from raw scenes to build the State Ledger."""
     initialize_generation_settings()
-    console.print(f"Starting state extraction from {cache_file}...")
+    console.print(f"Starting state extraction from raw scenes in {source_db}...")
     
-    extractor = StateExtractor(cache_file=cache_file)
-    extractor.extract_from_cache(output_file=output_file)
+    extractor = StateExtractor(source_db_path=source_db)
+    extractor.extract_from_sources(output_file=output_file)
 
 @app.command()
 def ingest(
