@@ -6,7 +6,15 @@ from pydantic_ai import Agent
 
 from ..console import safe_print
 from ..database import create_generation_model
-from ..models.state import SceneStateExtraction, StateFact, StateLedger
+from ..models.state import (
+    SINGLE_CURRENT_PREDICATES,
+    STATE_PREDICATES,
+    TARGET_REQUIRED_PREDICATES,
+    TARGET_UNUSED_PREDICATES,
+    SceneStateExtraction,
+    StateFact,
+    StateLedger,
+)
 from .source_store import DEFAULT_SOURCE_DB_PATH, SourceRecordStore
 
 
@@ -27,15 +35,25 @@ class StateExtractor:
         self.source_db_path = source_db_path or DEFAULT_SOURCE_DB_PATH
         self.cache_file = cache_file
         self.source_store = SourceRecordStore(self.source_db_path)
+        predicate_list = ", ".join(STATE_PREDICATES)
+        target_required = ", ".join(sorted(TARGET_REQUIRED_PREDICATES))
+        target_unused = ", ".join(sorted(TARGET_UNUSED_PREDICATES))
         self.agent = Agent(
             create_generation_model(),
             instructions=(
                 "You are a strict archivist extracting atomic world-state facts from raw "
                 "story scenes. Extract only facts directly supported by the provided scene. "
-                "Use concise predicates such as role, honorific_used_for, active_status, "
-                "location, group_membership, relationship, goal, or status. Every fact must "
-                "include an exact extracted_quote copied from the scene text. Return only "
-                "facts that match the requested schema."
+                f"Use only these predicates: {predicate_list}. "
+                "Use status only for transient or semi-durable conditions, not roles or "
+                "life stages. Use emotional_stance_toward only for durable emotional "
+                "orientations, not one-scene feelings. Use attribute sparingly for durable "
+                "traits or skills stated as facts. "
+                f"Predicates requiring target: {target_required}. "
+                f"Predicates that must not set target: {target_unused}. "
+                "For optional target predicates, set target only when the fact is directed "
+                "at a specific person, group, object, place, event, memory, or abstract "
+                "concept. Every fact must include an exact extracted_quote copied from the "
+                "scene text. Return only facts that match the requested schema."
             ),
             output_type=SceneStateExtraction,
         )
@@ -66,6 +84,7 @@ class StateExtractor:
                     StateFact(
                         subject=fact.subject,
                         predicate=fact.predicate,
+                        target=fact.target,
                         object=fact.object,
                         confidence=fact.confidence,
                         extracted_quote=fact.extracted_quote,
@@ -114,13 +133,14 @@ class StateExtractor:
                 fact.scene,
                 fact.subject,
                 fact.predicate,
+                fact.target or "",
                 fact.object,
                 fact.extracted_quote,
             ),
         )
-        open_facts: dict[tuple[str, str, str], list[int]] = {}
+        open_facts: dict[tuple[str, ...], list[int]] = {}
         for index, fact in enumerate(sorted_facts):
-            key = (fact.arc, fact.subject, fact.predicate)
+            key = self._supersession_key(fact)
             previous_indices = open_facts.get(key, [])
             if previous_indices:
                 previous_object = sorted_facts[previous_indices[-1]].object
@@ -137,6 +157,12 @@ class StateExtractor:
             else:
                 open_facts.setdefault(key, []).append(index)
         return sorted_facts
+
+    def _supersession_key(self, fact: StateFact) -> tuple[str, ...]:
+        key = (fact.arc, fact.subject, fact.predicate, fact.target or "")
+        if fact.predicate in SINGLE_CURRENT_PREDICATES:
+            return key
+        return (*key, fact.object)
 
     def _write_ledger(self, ledger: StateLedger, output_file: str) -> None:
         with open(output_file, "w", encoding="utf-8") as f:

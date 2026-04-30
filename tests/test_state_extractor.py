@@ -10,6 +10,7 @@ from linkura_story_indexer.indexer.source_store import SourceRecordStore
 from linkura_story_indexer.models.state import (
     ExtractedStateFact,
     SceneStateExtraction,
+    StateFact,
 )
 
 
@@ -26,7 +27,8 @@ class FakeAgent:
                     facts=[
                         ExtractedStateFact(
                             subject="花帆",
-                            predicate="honorific_used_for:さやか",
+                            predicate="honorific_used_for",
+                            target="さやか",
                             object="ちゃん",
                             confidence=0.9,
                             extracted_quote="さやかちゃん",
@@ -40,7 +42,8 @@ class FakeAgent:
                     facts=[
                         ExtractedStateFact(
                             subject="花帆",
-                            predicate="honorific_used_for:さやか",
+                            predicate="honorific_used_for",
+                            target="さやか",
                             object="さん",
                             confidence=0.9,
                             extracted_quote="さやかさん",
@@ -107,6 +110,29 @@ def test_state_extractor_uses_configured_generation_model(
     assert "strict archivist" in calls[0]["instructions"]
 
 
+def test_state_fact_requires_target_for_directed_predicates() -> None:
+    with pytest.raises(ValueError, match="honorific_used_for facts require target"):
+        ExtractedStateFact(
+            subject="花帆",
+            predicate="honorific_used_for",
+            object="ちゃん",
+            confidence=0.9,
+            extracted_quote="さやかちゃん",
+        )
+
+
+def test_state_fact_rejects_target_for_undirected_predicates() -> None:
+    with pytest.raises(ValueError, match="alias facts must not set target"):
+        ExtractedStateFact(
+            subject="慈",
+            predicate="alias",
+            target="花帆",
+            object="めぐちゃん",
+            confidence=0.9,
+            extracted_quote="めぐちゃん",
+        )
+
+
 def _write_story_file(root: Path, relative_path: str, content: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,9 +171,43 @@ def test_state_ledger_preserves_changed_honorifics_as_temporal_facts(tmp_path: P
 
     ledger = state_extractor.extract_from_sources(str(tmp_path / "world_state.json"))
 
-    assert [(fact.object, fact.valid_from, fact.valid_to) for fact in ledger.facts] == [
-        ("ちゃん", 1, 2),
-        ("さん", 2, None),
+    assert [(fact.target, fact.object, fact.valid_from, fact.valid_to) for fact in ledger.facts] == [
+        ("さやか", "ちゃん", 1, 2),
+        ("さやか", "さん", 2, None),
+    ]
+
+
+def test_state_ledger_keeps_multiple_multi_value_facts_open(tmp_path: Path) -> None:
+    state_extractor = StateExtractor.__new__(StateExtractor)
+    first = StateFact(
+        subject="花帆",
+        predicate="goal",
+        object="花咲く",
+        confidence=1.0,
+        extracted_quote="花咲きたい",
+        arc="103",
+        episode="第1話",
+        part="1",
+        scene=0,
+        valid_from=1,
+        file_path="story/103/第1話/1.md",
+        scene_index=0,
+    )
+    second = first.model_copy(
+        update={
+            "object": "スクールアイドルになる",
+            "extracted_quote": "スクールアイドルになる",
+            "valid_from": 2,
+            "scene": 1,
+            "scene_index": 1,
+        }
+    )
+
+    facts = state_extractor._with_valid_to([first, second])
+
+    assert [(fact.object, fact.valid_to) for fact in facts] == [
+        ("花咲く", None),
+        ("スクールアイドルになる", None),
     ]
 
 

@@ -14,11 +14,12 @@ def make_engine() -> StoryQueryEngine:
     engine = StoryQueryEngine.__new__(StoryQueryEngine)
     engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0)
     engine.state_ledger = {
-        "schema_version": 2,
+        "schema_version": 3,
         "facts": [
             {
                 "subject": "Kaho Hinoshita",
                 "predicate": "status",
+                "target": None,
                 "object": "active",
                 "arc": "103",
                 "episode": "第1話『花咲きたい！』",
@@ -34,6 +35,7 @@ def make_engine() -> StoryQueryEngine:
             {
                 "subject": "Sayaka Murano",
                 "predicate": "status",
+                "target": None,
                 "object": "active",
                 "arc": "104",
                 "episode": "第1話『未来への歌』",
@@ -84,11 +86,12 @@ def test_state_ledger_arc_ids_falls_back_to_retrieved_arcs():
 def test_state_ledger_slice_respects_as_of_temporal_constraint():
     engine = make_engine()
     engine.state_ledger = {
-        "schema_version": 2,
+        "schema_version": 3,
         "facts": [
             {
                 "subject": "花帆",
-                "predicate": "honorific_used_for:さやか",
+                "predicate": "honorific_used_for",
+                "target": "さやか",
                 "object": "ちゃん",
                 "arc": "103",
                 "episode": "第1話『花咲きたい！』",
@@ -103,7 +106,8 @@ def test_state_ledger_slice_respects_as_of_temporal_constraint():
             },
             {
                 "subject": "花帆",
-                "predicate": "honorific_used_for:さやか",
+                "predicate": "honorific_used_for",
+                "target": "さやか",
                 "object": "さん",
                 "arc": "103",
                 "episode": "第2話『Dream Match！』",

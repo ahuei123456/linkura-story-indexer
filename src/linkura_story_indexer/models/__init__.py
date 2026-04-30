@@ -1,3 +1,7 @@
+from .state import SINGLE_CURRENT_PREDICATES as SINGLE_CURRENT_PREDICATES
+from .state import STATE_PREDICATES as STATE_PREDICATES
+from .state import TARGET_REQUIRED_PREDICATES as TARGET_REQUIRED_PREDICATES
+from .state import TARGET_UNUSED_PREDICATES as TARGET_UNUSED_PREDICATES
 from .state import ExtractedStateFact as ExtractedStateFact
 from .state import SceneStateExtraction as SceneStateExtraction
 from .state import StateFact as StateFact
