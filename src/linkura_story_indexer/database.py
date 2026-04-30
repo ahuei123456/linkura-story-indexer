@@ -14,10 +14,12 @@ from pydantic_ai.providers.google import GoogleProvider
 load_dotenv()
 
 DEFAULT_CHAT_MODEL = "gemini-3-flash-preview"
+DEFAULT_GENERATION_PROVIDER = "google"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 DEFAULT_CHROMA_DB_PATH = "./chroma_db"
 RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
 RETRIEVAL_QUERY = "RETRIEVAL_QUERY"
+SUPPORTED_GENERATION_PROVIDERS = {"google", "openai"}
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ _chroma_clients: dict[str, Any] = {}
 _chroma_collections: dict[tuple[str, str], Any] = {}
 _genai_clients: dict[str, genai.Client] = {}
 _google_models: dict[tuple[str, str], GoogleModel] = {}
+_openai_models: dict[tuple[str, str, str], Any] = {}
 
 
 def get_google_api_key() -> str:
@@ -41,8 +44,23 @@ def get_google_api_key() -> str:
     return api_key
 
 
+def get_openai_api_key() -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not found in .env file")
+    return api_key
+
+
 def get_chat_model_name() -> str:
     return os.getenv("LINKURA_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+
+
+def get_generation_provider_name() -> str:
+    return os.getenv("LINKURA_INGEST_PROVIDER", DEFAULT_GENERATION_PROVIDER).strip().lower()
+
+
+def get_generation_model_name() -> str:
+    return os.getenv("LINKURA_INGEST_MODEL") or get_chat_model_name()
 
 
 def get_embedding_model_name() -> str:
@@ -58,14 +76,57 @@ def initialize_settings() -> None:
     get_google_api_key()
 
 
+def initialize_generation_settings() -> None:
+    """Validates environment configuration for commands that call generation APIs."""
+    provider = get_generation_provider_name()
+    if provider == "google":
+        get_google_api_key()
+    elif provider == "openai":
+        get_openai_api_key()
+        if not os.getenv("LINKURA_INGEST_MODEL") and not os.getenv("LINKURA_CHAT_MODEL"):
+            raise ValueError(
+                "LINKURA_INGEST_PROVIDER=openai requires LINKURA_INGEST_MODEL, "
+                "or LINKURA_CHAT_MODEL set to an OpenAI model."
+            )
+    else:
+        raise ValueError(
+            f"Unsupported LINKURA_INGEST_PROVIDER {provider!r}. "
+            f"Expected one of: {', '.join(sorted(SUPPORTED_GENERATION_PROVIDERS))}"
+        )
+
+
+def initialize_ingest_settings() -> None:
+    """Validates environment configuration for ingest embeddings and generation."""
+    get_google_api_key()
+    initialize_generation_settings()
+
+
 def create_text_agent(instructions: str) -> Agent[None, str]:
     """Creates a PydanticAI agent backed by Gemini."""
     return Agent(create_google_model(), instructions=instructions)
 
 
-def create_google_model() -> GoogleModel:
+def create_generation_text_agent(instructions: str) -> Agent[None, str]:
+    """Creates a PydanticAI text agent backed by the configured generation provider."""
+    return Agent(create_generation_model(), instructions=instructions)
+
+
+def create_generation_model() -> Any:
+    provider = get_generation_provider_name()
+    model_name = get_generation_model_name()
+    if provider == "google":
+        return create_google_model(model_name)
+    if provider == "openai":
+        return create_openai_model(model_name)
+    raise ValueError(
+        f"Unsupported LINKURA_INGEST_PROVIDER {provider!r}. "
+        f"Expected one of: {', '.join(sorted(SUPPORTED_GENERATION_PROVIDERS))}"
+    )
+
+
+def create_google_model(model_name: str | None = None) -> GoogleModel:
     api_key = get_google_api_key()
-    model_name = get_chat_model_name()
+    model_name = model_name or get_chat_model_name()
     cache_key = (api_key, model_name)
     if cache_key not in _google_models:
         _google_models[cache_key] = GoogleModel(
@@ -73,6 +134,29 @@ def create_google_model() -> GoogleModel:
             provider=GoogleProvider(api_key=api_key),
         )
     return _google_models[cache_key]
+
+
+def create_openai_model(model_name: str | None = None) -> Any:
+    api_key = get_openai_api_key()
+    model_name = model_name or get_generation_model_name()
+    base_url = os.getenv("OPENAI_BASE_URL", "")
+    cache_key = (api_key, model_name, base_url)
+    if cache_key not in _openai_models:
+        try:
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.openai import OpenAIProvider
+        except ImportError as exc:
+            raise ImportError(
+                "OpenAI generation requires the OpenAI extra. "
+                "Install dependencies with `uv sync` after adding "
+                '`pydantic-ai-slim[google,openai]`.'
+            ) from exc
+
+        _openai_models[cache_key] = OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(base_url=base_url or None, api_key=api_key),
+        )
+    return _openai_models[cache_key]
 
 
 def get_genai_client() -> genai.Client:
@@ -203,3 +287,4 @@ def reset_client_caches() -> None:
     _chroma_collections.clear()
     _genai_clients.clear()
     _google_models.clear()
+    _openai_models.clear()

@@ -6,20 +6,114 @@ from linkura_story_indexer.database import EmbeddingDocument
 
 def test_model_and_chroma_env_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("LINKURA_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("LINKURA_INGEST_PROVIDER", raising=False)
+    monkeypatch.delenv("LINKURA_INGEST_MODEL", raising=False)
     monkeypatch.delenv("LINKURA_EMBEDDING_MODEL", raising=False)
     monkeypatch.delenv("LINKURA_CHROMA_DB_PATH", raising=False)
 
     assert database.get_chat_model_name() == database.DEFAULT_CHAT_MODEL
+    assert database.get_generation_provider_name() == database.DEFAULT_GENERATION_PROVIDER
+    assert database.get_generation_model_name() == database.DEFAULT_CHAT_MODEL
     assert database.get_embedding_model_name() == database.DEFAULT_EMBEDDING_MODEL
     assert database.get_chroma_db_path() == database.DEFAULT_CHROMA_DB_PATH
 
     monkeypatch.setenv("LINKURA_CHAT_MODEL", "custom-chat")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "custom-ingest")
     monkeypatch.setenv("LINKURA_EMBEDDING_MODEL", "custom-embedding")
     monkeypatch.setenv("LINKURA_CHROMA_DB_PATH", "./custom_chroma")
 
     assert database.get_chat_model_name() == "custom-chat"
+    assert database.get_generation_provider_name() == "openai"
+    assert database.get_generation_model_name() == "custom-ingest"
     assert database.get_embedding_model_name() == "custom-embedding"
     assert database.get_chroma_db_path() == "./custom_chroma"
+
+
+def test_generation_model_falls_back_to_chat_model(monkeypatch):
+    monkeypatch.delenv("LINKURA_INGEST_MODEL", raising=False)
+    monkeypatch.setenv("LINKURA_CHAT_MODEL", "fallback-chat")
+
+    assert database.get_generation_model_name() == "fallback-chat"
+
+
+def test_generation_model_uses_google_by_default(monkeypatch):
+    database.reset_client_caches()
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("LINKURA_INGEST_PROVIDER", raising=False)
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gemini-custom")
+
+    class FakeGoogleProvider:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+    class FakeGoogleModel:
+        created: list[tuple[str, Any]] = []
+
+        def __init__(self, model_name: str, *, provider: Any):
+            self.model_name = model_name
+            self.provider = provider
+            self.created.append((model_name, provider))
+
+    monkeypatch.setattr(database, "GoogleProvider", FakeGoogleProvider)
+    monkeypatch.setattr(database, "GoogleModel", FakeGoogleModel)
+
+    assert database.create_generation_model() is database.create_generation_model()
+    assert len(FakeGoogleModel.created) == 1
+    assert FakeGoogleModel.created[0][0] == "gemini-custom"
+
+
+def test_generation_model_uses_openai_when_selected(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gpt-5-mini")
+    calls: list[str | None] = []
+
+    def fake_create_openai_model(model_name: str | None = None) -> str:
+        calls.append(model_name)
+        return "openai-model"
+
+    monkeypatch.setattr(database, "create_openai_model", fake_create_openai_model)
+
+    assert database.create_generation_model() == "openai-model"
+    assert calls == ["gpt-5-mini"]
+
+
+def test_generation_settings_validate_only_selected_provider(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gpt-5-mini")
+
+    database.initialize_generation_settings()
+
+
+def test_openai_generation_requires_openai_model_when_chat_model_is_unset(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.delenv("LINKURA_INGEST_MODEL", raising=False)
+    monkeypatch.delenv("LINKURA_CHAT_MODEL", raising=False)
+
+    try:
+        database.initialize_generation_settings()
+    except ValueError as exc:
+        assert "LINKURA_INGEST_MODEL" in str(exc)
+    else:
+        raise AssertionError("OpenAI generation should require an OpenAI model")
+
+
+def test_ingest_settings_still_require_google_for_embeddings(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gpt-5-mini")
+
+    try:
+        database.initialize_ingest_settings()
+    except ValueError as exc:
+        assert "GOOGLE_API_KEY" in str(exc)
+    else:
+        raise AssertionError("initialize_ingest_settings should require GOOGLE_API_KEY")
 
 
 def test_client_and_model_helpers_return_singletons(monkeypatch):

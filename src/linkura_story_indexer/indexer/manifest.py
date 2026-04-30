@@ -32,6 +32,8 @@ class IngestionManifest(BaseModel):
     summarization_prompt_version: str
     glossary_hash: str
     chat_model: str
+    generation_provider: str = "google"
+    generation_model: str = ""
     embedding_model: str
     raw_evidence_schema_version: str = RAW_EVIDENCE_SCHEMA_VERSION
     summary_cache_schema_version: str = SUMMARY_CACHE_SCHEMA_VERSION
@@ -44,6 +46,8 @@ class SummaryCacheContext(BaseModel):
     summarization_prompt_version: str
     glossary_hash: str
     chat_model: str
+    generation_provider: str = "google"
+    generation_model: str = ""
     embedding_model: str
     summary_cache_schema_version: str = SUMMARY_CACHE_SCHEMA_VERSION
 

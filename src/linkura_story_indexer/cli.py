@@ -14,6 +14,10 @@ from .database import (
     get_chat_model_name,
     get_chroma_collection,
     get_embedding_model_name,
+    get_generation_model_name,
+    get_generation_provider_name,
+    initialize_generation_settings,
+    initialize_ingest_settings,
     initialize_settings,
 )
 from .indexer.chunker import (
@@ -297,7 +301,7 @@ def chat():
 @app.command()
 def extract_state(cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"), output_file: str = typer.Option("world_state.json", help="Path to output the world state JSON")):
     """Extracts facts from cached Episode summaries to build the State Ledger."""
-    initialize_settings()
+    initialize_generation_settings()
     console.print(f"Starting state extraction from {cache_file}...")
     
     extractor = StateExtractor(cache_file=cache_file)
@@ -311,7 +315,7 @@ def ingest(
     prune: bool = typer.Option(True, "--prune/--no-prune", help="Delete indexed records not emitted by this run"),
 ):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
-    initialize_settings()
+    initialize_ingest_settings()
     
     story_path = Path(story_dir)
     if not story_path.exists():
@@ -350,6 +354,8 @@ def ingest(
             console.print("Loaded glossary for translation invariants.")
 
     # Generate Tier 1-3 hierarchical summaries
+    generation_provider = get_generation_provider_name()
+    generation_model = get_generation_model_name()
     chat_model = get_chat_model_name()
     embedding_model = get_embedding_model_name()
     cache_context = SummaryCacheContext(
@@ -358,6 +364,8 @@ def ingest(
         summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
         glossary_hash=glossary_hash,
         chat_model=chat_model,
+        generation_provider=generation_provider,
+        generation_model=generation_model,
         embedding_model=embedding_model,
         summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,
     )
@@ -402,6 +410,8 @@ def ingest(
         summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
         glossary_hash=glossary_hash,
         chat_model=chat_model,
+        generation_provider=generation_provider,
+        generation_model=generation_model,
         embedding_model=embedding_model,
         raw_evidence_schema_version=RAW_EVIDENCE_SCHEMA_VERSION,
         summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,

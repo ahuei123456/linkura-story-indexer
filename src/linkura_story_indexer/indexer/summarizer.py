@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Any
 
 from ..console import safe_print
-from ..database import create_text_agent
+from ..database import create_generation_text_agent
 from ..models.story import StoryNode
 from ..story_order import StoryOrder, default_story_order
 from .manifest import (
@@ -103,7 +103,7 @@ class HierarchicalSummarizer:
             prompt += f"--- CURRENT {level_name.upper()} TEXT (IN JAPANESE) ---\n{current_text}\n\n"
             prompt += f"Write a comprehensive English summary of the CURRENT {level_name.upper()} TEXT."
 
-        result = create_text_agent(system_content).run_sync(prompt)
+        result = create_generation_text_agent(system_content).run_sync(prompt)
         return result.output.strip()
 
     def _base_fingerprint_inputs(self, level: str) -> dict[str, Any]:
@@ -117,7 +117,7 @@ class HierarchicalSummarizer:
                 "embedding_model": "unconfigured",
                 "parser_version": "unconfigured",
             }
-        return {
+        inputs = {
             "level": level,
             "summary_cache_schema_version": self.cache_context.summary_cache_schema_version,
             "summarization_prompt_version": self.cache_context.summarization_prompt_version,
@@ -126,6 +126,13 @@ class HierarchicalSummarizer:
             "embedding_model": self.cache_context.embedding_model,
             "parser_version": self.cache_context.parser_version,
         }
+        if (
+            self.cache_context.generation_provider != "google"
+            or self.cache_context.generation_model != self.cache_context.chat_model
+        ):
+            inputs["generation_provider"] = self.cache_context.generation_provider
+            inputs["generation_model"] = self.cache_context.generation_model
+        return inputs
 
     def _source_file_hashes_for_nodes(self, nodes: list[StoryNode]) -> dict[str, str]:
         grouped_text: dict[str, list[str]] = defaultdict(list)
