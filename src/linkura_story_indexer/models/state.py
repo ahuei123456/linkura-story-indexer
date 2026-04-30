@@ -54,6 +54,8 @@ SINGLE_CURRENT_PREDICATES = {
     "life_stage",
 }
 
+STATE_LEDGER_SCHEMA_VERSION = 3
+
 
 class ExtractedStateFact(BaseModel):
     """Atomic fact as emitted by the scene-level extraction model."""
@@ -118,5 +120,5 @@ class StateFact(ExtractedStateFact):
 class StateLedger(BaseModel):
     """World-state ledger stored as source-backed fact records."""
 
-    schema_version: int = 3
+    schema_version: int = STATE_LEDGER_SCHEMA_VERSION
     facts: list[StateFact] = Field(default_factory=list)

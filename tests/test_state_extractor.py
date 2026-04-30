@@ -78,6 +78,11 @@ class FakeAgentWithBadQuote:
         )
 
 
+class ExplodingAgent:
+    def run_sync(self, prompt: str) -> FakeRunResult:
+        raise RuntimeError("LLM should not have been called")
+
+
 def test_state_extractor_uses_configured_generation_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -140,7 +145,12 @@ def _write_story_file(root: Path, relative_path: str, content: str) -> Path:
     return path
 
 
-def _source_store(tmp_path: Path, content: str) -> SourceRecordStore:
+def _source_store(
+    tmp_path: Path,
+    content: str,
+    *,
+    assign_story_order: bool = True,
+) -> SourceRecordStore:
     story_root = tmp_path / "story"
     story_file = _write_story_file(
         story_root,
@@ -148,10 +158,11 @@ def _source_store(tmp_path: Path, content: str) -> SourceRecordStore:
         content,
     )
     raw_nodes = StoryProcessor.process_file(story_file)
-    for order, node in enumerate(raw_nodes, start=1):
-        node.metadata.canonical_story_order = order
-        node.metadata.story_order = order
-        node.metadata.episode_number = 1
+    if assign_story_order:
+        for order, node in enumerate(raw_nodes, start=1):
+            node.metadata.canonical_story_order = order
+            node.metadata.story_order = order
+            node.metadata.episode_number = 1
     store = SourceRecordStore(tmp_path / "source.db")
     store.replace_all(raw_nodes, [])
     return store
@@ -211,6 +222,37 @@ def test_state_ledger_keeps_multiple_multi_value_facts_open(tmp_path: Path) -> N
     ]
 
 
+def test_state_ledger_keeps_same_order_single_current_conflicts_open(tmp_path: Path) -> None:
+    state_extractor = StateExtractor.__new__(StateExtractor)
+    first = StateFact(
+        subject="花帆",
+        predicate="status",
+        object="happy",
+        confidence=1.0,
+        extracted_quote="楽しい",
+        arc="103",
+        episode="第1話",
+        part="1",
+        scene=0,
+        valid_from=1,
+        file_path="story/103/第1話/1.md",
+        scene_index=0,
+    )
+    second = first.model_copy(
+        update={
+            "object": "nervous",
+            "extracted_quote": "緊張する",
+        }
+    )
+
+    facts = state_extractor._with_valid_to([first, second])
+
+    assert [(fact.object, fact.valid_to) for fact in facts] == [
+        ("happy", None),
+        ("nervous", None),
+    ]
+
+
 def test_state_ledger_drops_facts_without_source_quote_match(tmp_path: Path) -> None:
     store = _source_store(tmp_path, "花帆: ここにいるよ")
     state_extractor = _extractor(store, FakeAgentWithBadQuote())
@@ -219,6 +261,53 @@ def test_state_ledger_drops_facts_without_source_quote_match(tmp_path: Path) -> 
 
     assert [fact.subject for fact in ledger.facts] == ["花帆"]
     assert ledger.facts[0].extracted_quote in store.iter_scenes()[0]["text"]
+
+
+def test_state_extraction_reuses_cached_scene_facts(tmp_path: Path) -> None:
+    store = _source_store(tmp_path, "花帆: さやかちゃん、行こう")
+    first_extractor = _extractor(store, FakeAgent())
+
+    first = first_extractor.extract_from_sources(str(tmp_path / "first.json"))
+    second = _extractor(store, ExplodingAgent()).extract_from_sources(str(tmp_path / "second.json"))
+
+    assert first.model_dump() == second.model_dump()
+
+
+def test_state_extraction_continues_after_scene_failure(tmp_path: Path) -> None:
+    store = _source_store(tmp_path, "花帆: 壊れる\n---\n花帆: ここにいるよ")
+
+    class FailsFirstAgent:
+        def run_sync(self, prompt: str) -> FakeRunResult:
+            if "壊れる" in prompt:
+                raise RuntimeError("broken scene")
+            return FakeRunResult(
+                SceneStateExtraction(
+                    facts=[
+                        ExtractedStateFact(
+                            subject="花帆",
+                            predicate="status",
+                            object="present",
+                            confidence=1.0,
+                            extracted_quote="花帆",
+                        )
+                    ]
+                )
+            )
+
+    state_extractor = _extractor(store, FailsFirstAgent())
+
+    ledger = state_extractor.extract_from_sources(str(tmp_path / "world_state.json"))
+
+    assert [fact.object for fact in ledger.facts] == ["present"]
+
+
+def test_state_extraction_skips_scenes_without_story_order(tmp_path: Path) -> None:
+    store = _source_store(tmp_path, "花帆: さやかちゃん、行こう", assign_story_order=False)
+    state_extractor = _extractor(store, ExplodingAgent())
+
+    ledger = state_extractor.extract_from_sources(str(tmp_path / "world_state.json"))
+
+    assert ledger.facts == []
 
 
 def test_state_extraction_is_deterministic_for_fixed_inputs(tmp_path: Path) -> None:

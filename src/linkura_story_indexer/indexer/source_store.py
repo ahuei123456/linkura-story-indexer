@@ -93,6 +93,20 @@ class SourceRecordStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS state_extraction_cache (
+                    scene_id TEXT PRIMARY KEY,
+                    scene_hash TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    generation_provider TEXT NOT NULL,
+                    generation_model TEXT NOT NULL,
+                    facts_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
 
     def replace_all(self, raw_nodes: list[StoryNode], retrieval_chunks: list[StoryNode]) -> None:
         with self._connect() as connection:
@@ -248,6 +262,87 @@ class SourceRecordStore:
                 int(scene["scene_index"]),
             ),
         )
+
+    def cached_state_facts(
+        self,
+        *,
+        scene_id: str,
+        scene_hash: str,
+        schema_version: int,
+        prompt_version: str,
+        generation_provider: str,
+        generation_model: str,
+    ) -> list[dict[str, Any]] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT facts_json
+                FROM state_extraction_cache
+                WHERE scene_id = ?
+                  AND scene_hash = ?
+                  AND schema_version = ?
+                  AND prompt_version = ?
+                  AND generation_provider = ?
+                  AND generation_model = ?
+                """,
+                (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row["facts_json"]))
+        return value if isinstance(value, list) else None
+
+    def upsert_state_facts_cache(
+        self,
+        *,
+        scene_id: str,
+        scene_hash: str,
+        schema_version: int,
+        prompt_version: str,
+        generation_provider: str,
+        generation_model: str,
+        facts: list[dict[str, Any]],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO state_extraction_cache (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                    facts_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    scene_hash = excluded.scene_hash,
+                    schema_version = excluded.schema_version,
+                    prompt_version = excluded.prompt_version,
+                    generation_provider = excluded.generation_provider,
+                    generation_model = excluded.generation_model,
+                    facts_json = excluded.facts_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    scene_id,
+                    scene_hash,
+                    schema_version,
+                    prompt_version,
+                    generation_provider,
+                    generation_model,
+                    _stable_json(facts),
+                ),
+            )
 
     def chunk_ids_for_speaker(self, speaker: str) -> list[str]:
         with self._connect() as connection:
