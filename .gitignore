@@ -218,3 +218,8 @@ summaries_cache.json
 world_state.json
 lexical_index.db
 source_records.db
+glossary_candidates.json
+
+# LLM stuff
+.claude/
+.codex/
