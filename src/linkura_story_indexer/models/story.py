@@ -5,7 +5,15 @@ class DialogueTurn(BaseModel):
     turn_id: str = Field("", description="Stable identifier for this dialogue turn")
     scene_id: str = Field("", description="Stable source scene identifier")
     turn_index: int = Field(0, description="Ordered index within the source scene")
-    speaker: str = Field(..., description="Speaker name, or UNKNOWN when not explicit")
+    speaker: str = Field(..., description="Raw speaker label, or UNKNOWN when not explicit")
+    speaker_tokens: list[str] = Field(
+        default_factory=list,
+        description="Queryable speaker tokens parsed from the raw speaker label",
+    )
+    speaker_kind: str = Field(
+        "",
+        description="Speaker label kind, such as named, collective, or unknown",
+    )
     text: str = Field(..., description="Dialogue text")
     line_start: int = Field(0, description="Zero-based source line where this turn starts")
     line_end: int = Field(0, description="Zero-based source line where this turn ends")
