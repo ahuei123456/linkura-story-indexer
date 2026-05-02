@@ -30,6 +30,25 @@ def test_script_scene_parser_preserves_ordered_turns_and_unknown_lines():
     assert [turn.turn_id for turn in turns] == ["turn:scene:test:0:0", "turn:scene:test:0:1"]
 
 
+def test_script_scene_parser_splits_composite_speaker_labels() -> None:
+    turns = StoryParser.parse_script_scene(
+        "梢＆慈: おお……。\n瑠璃乃&amp;姫芽: で、バズ曲ってなんだ？？？？？？\n全員: おー！！",
+        scene_id="scene:test:composite",
+    )
+
+    assert [(turn.speaker, turn.text) for turn in turns] == [
+        ("梢＆慈", "おお……。"),
+        ("瑠璃乃&amp;姫芽", "で、バズ曲ってなんだ？？？？？？"),
+        ("全員", "おー！！"),
+    ]
+    assert [turn.speaker_tokens for turn in turns] == [
+        ["梢", "慈"],
+        ["瑠璃乃", "姫芽"],
+        ["全員"],
+    ]
+    assert [turn.speaker_kind for turn in turns] == ["named", "named", "collective"]
+
+
 def test_prose_scene_parser_separates_quoted_dialogue_from_narrative():
     turns, beats = StoryParser.parse_prose_scene(
         "泉は笑った。「行こう」それから走った。",
@@ -43,16 +62,16 @@ def test_prose_scene_parser_separates_quoted_dialogue_from_narrative():
 def test_processed_scene_metadata_speakers_match_structured_turn_union(tmp_path: Path):
     path = tmp_path / "story" / "103" / "第1話『花咲きたい！』" / "1.md"
     path.parent.mkdir(parents=True)
-    path.write_text("花帆: こんにちは\nさやか: どうしたの？", encoding="utf-8")
+    path.write_text("花帆: こんにちは\n梢＆慈: おお……。", encoding="utf-8")
 
     node = StoryProcessor.process_file(path)[0]
 
-    assert node.metadata.speakers == ["花帆", "さやか"]
-    assert node.metadata.detected_speakers == ["花帆", "さやか"]
+    assert node.metadata.speakers == ["花帆", "梢", "慈"]
+    assert node.metadata.detected_speakers == ["花帆", "梢", "慈"]
     assert node.metadata.source_scene_ids == [
         "scene:103|Main|第1話『花咲きたい！』|1:0"
     ]
-    assert [turn.speaker for turn in node.dialogue_turns] == ["花帆", "さやか"]
+    assert [turn.speaker for turn in node.dialogue_turns] == ["花帆", "梢＆慈"]
 
 def test_hierarchy_extraction():
     # Main story test

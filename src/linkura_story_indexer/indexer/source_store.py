@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models.story import DialogueTurn, NarrativeBeat, StoryNode
+from .parser import SPEAKER_KIND_NAMED, StoryParser
 
 DEFAULT_SOURCE_DB_PATH = "./source_records.db"
 
@@ -28,6 +29,12 @@ def _chunk_id(node: StoryNode) -> str:
 def _metadata_order(metadata: dict[str, Any]) -> int:
     order = metadata.get("story_order", metadata.get("canonical_story_order"))
     return int(order) if isinstance(order, int) else 0
+
+
+def _turn_speaker_tokens(turn: DialogueTurn) -> tuple[list[str], str]:
+    if turn.speaker_tokens:
+        return turn.speaker_tokens, turn.speaker_kind or SPEAKER_KIND_NAMED
+    return StoryParser.parse_speaker_label(turn.speaker)
 
 
 class SourceRecordStore:
@@ -85,6 +92,16 @@ class SourceRecordStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS dialogue_turn_speakers (
+                    turn_id TEXT NOT NULL,
+                    speaker TEXT NOT NULL,
+                    speaker_kind TEXT NOT NULL,
+                    PRIMARY KEY (turn_id, speaker)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS retrieval_chunk_sources (
                     chunk_id TEXT NOT NULL,
                     scene_id TEXT NOT NULL,
@@ -107,10 +124,48 @@ class SourceRecordStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_dialogue_turn_speakers_speaker
+                ON dialogue_turn_speakers (speaker)
+                """
+            )
+            self._backfill_turn_speakers(connection)
+
+    def _backfill_turn_speakers(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT
+                t.turn_id,
+                t.scene_id,
+                t.turn_index,
+                t.speaker,
+                t.text,
+                t.line_start,
+                t.line_end
+            FROM dialogue_turns AS t
+            LEFT JOIN dialogue_turn_speakers AS ts ON ts.turn_id = t.turn_id
+            WHERE ts.turn_id IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            self._upsert_turn_speakers(
+                connection,
+                DialogueTurn(
+                    turn_id=str(row["turn_id"]),
+                    scene_id=str(row["scene_id"]),
+                    turn_index=int(row["turn_index"]),
+                    speaker=str(row["speaker"]),
+                    text=str(row["text"]),
+                    line_start=int(row["line_start"]),
+                    line_end=int(row["line_end"]),
+                ),
+            )
 
     def replace_all(self, raw_nodes: list[StoryNode], retrieval_chunks: list[StoryNode]) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM source_scenes")
+            connection.execute("DELETE FROM dialogue_turn_speakers")
             connection.execute("DELETE FROM dialogue_turns")
             connection.execute("DELETE FROM narrative_beats")
             connection.execute("DELETE FROM retrieval_chunk_sources")
@@ -181,6 +236,25 @@ class SourceRecordStore:
                     turn.line_start,
                     turn.line_end,
                 ),
+            )
+            self._upsert_turn_speakers(connection, turn)
+
+    def _upsert_turn_speakers(
+        self,
+        connection: sqlite3.Connection,
+        turn: DialogueTurn,
+    ) -> None:
+        connection.execute("DELETE FROM dialogue_turn_speakers WHERE turn_id = ?", (turn.turn_id,))
+        speaker_tokens, speaker_kind = _turn_speaker_tokens(turn)
+        for speaker in speaker_tokens:
+            connection.execute(
+                """
+                INSERT INTO dialogue_turn_speakers (turn_id, speaker, speaker_kind)
+                VALUES (?, ?, ?)
+                ON CONFLICT(turn_id, speaker) DO UPDATE SET
+                    speaker_kind = excluded.speaker_kind
+                """,
+                (turn.turn_id, speaker, speaker_kind),
             )
 
     def _upsert_beats(
@@ -351,7 +425,8 @@ class SourceRecordStore:
                 SELECT DISTINCT r.chunk_id
                 FROM retrieval_chunk_sources AS r
                 JOIN dialogue_turns AS t ON t.scene_id = r.scene_id
-                WHERE t.speaker = ?
+                JOIN dialogue_turn_speakers AS ts ON ts.turn_id = t.turn_id
+                WHERE ts.speaker = ?
                 ORDER BY r.chunk_id
                 """,
                 (speaker,),
@@ -386,7 +461,7 @@ class SourceRecordStore:
         *,
         parent_part_id: str | None = None,
     ) -> int:
-        filters = ["t.speaker = ?"]
+        filters = ["ts.speaker = ?"]
         params: list[Any] = [speaker]
         if parent_part_id is not None:
             filters.append("s.parent_part_id = ?")
@@ -395,8 +470,9 @@ class SourceRecordStore:
         with self._connect() as connection:
             row = connection.execute(
                 f"""
-                SELECT COUNT(*) AS count
+                SELECT COUNT(DISTINCT t.turn_id) AS count
                 FROM dialogue_turns AS t
+                JOIN dialogue_turn_speakers AS ts ON ts.turn_id = t.turn_id
                 JOIN source_scenes AS s ON s.scene_id = t.scene_id
                 WHERE {where}
                 """,

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 MANIFEST_SCHEMA_VERSION = "1"
 SUMMARY_CACHE_SCHEMA_VERSION = "1"
-RAW_EVIDENCE_SCHEMA_VERSION = "2"
+RAW_EVIDENCE_SCHEMA_VERSION = "3"
 
 
 class ChunkerConfig(BaseModel):

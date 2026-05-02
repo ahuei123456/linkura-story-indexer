@@ -1,10 +1,16 @@
+import html
 import re
 
 from ..models.story import DialogueTurn, NarrativeBeat
 
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 UNKNOWN_SPEAKER = "UNKNOWN"
+SPEAKER_KIND_COLLECTIVE = "collective"
+SPEAKER_KIND_NAMED = "named"
+SPEAKER_KIND_UNKNOWN = "unknown"
+COLLECTIVE_SPEAKERS = {"全員"}
 _QUOTE_RE = re.compile(r"(「[^」]+」|『[^』]+』|“[^”]+”|\"[^\"]+\")")
+_SPEAKER_SEPARATOR_RE = re.compile(r"\s*(?:＆|&)\s*")
 
 
 class StoryParser:
@@ -29,15 +35,39 @@ class StoryParser:
         return "", ""
 
     @staticmethod
+    def parse_speaker_label(speaker: str) -> tuple[list[str], str]:
+        """Returns queryable speaker tokens and the speaker kind for a raw label."""
+        normalized = html.unescape(speaker).strip()
+        if not normalized:
+            return [], ""
+        if normalized == UNKNOWN_SPEAKER:
+            return [UNKNOWN_SPEAKER], SPEAKER_KIND_UNKNOWN
+        if normalized in COLLECTIVE_SPEAKERS:
+            return [normalized], SPEAKER_KIND_COLLECTIVE
+
+        tokens: list[str] = []
+        seen = set()
+        for token in _SPEAKER_SEPARATOR_RE.split(normalized):
+            token = token.strip()
+            if not token or token in seen:
+                continue
+            tokens.append(token)
+            seen.add(token)
+        return tokens or [normalized], SPEAKER_KIND_NAMED
+
+    @staticmethod
     def detect_speakers(content: str) -> list[str]:
         """Returns unique script speakers in first-seen order."""
         speakers = []
         seen = set()
         for line in content.splitlines():
             speaker, _ = StoryParser.parse_script_line(line)
-            if speaker and speaker not in seen:
-                speakers.append(speaker)
-                seen.add(speaker)
+            speaker_tokens, _ = StoryParser.parse_speaker_label(speaker)
+            for speaker_token in speaker_tokens:
+                if speaker_token in seen:
+                    continue
+                speakers.append(speaker_token)
+                seen.add(speaker_token)
         return speakers
 
     @staticmethod
@@ -46,10 +76,14 @@ class StoryParser:
         speakers = []
         seen = set()
         for turn in turns:
-            if turn.speaker in seen:
-                continue
-            speakers.append(turn.speaker)
-            seen.add(turn.speaker)
+            speaker_tokens = turn.speaker_tokens
+            if not speaker_tokens:
+                speaker_tokens, _ = StoryParser.parse_speaker_label(turn.speaker)
+            for speaker in speaker_tokens:
+                if speaker in seen:
+                    continue
+                speakers.append(speaker)
+                seen.add(speaker)
         return speakers
 
     @staticmethod
@@ -64,6 +98,7 @@ class StoryParser:
             if not speaker:
                 speaker = UNKNOWN_SPEAKER
                 text = stripped
+            speaker_tokens, speaker_kind = StoryParser.parse_speaker_label(speaker)
             turn_index = len(turns)
             turn_id = f"turn:{scene_id}:{turn_index}" if scene_id else ""
             turns.append(
@@ -72,6 +107,8 @@ class StoryParser:
                     scene_id=scene_id,
                     turn_index=turn_index,
                     speaker=speaker,
+                    speaker_tokens=speaker_tokens,
+                    speaker_kind=speaker_kind,
                     text=text,
                     line_start=line_number,
                     line_end=line_number,
@@ -108,12 +145,15 @@ class StoryParser:
 
                 turn_index = len(turns)
                 turn_id = f"turn:{scene_id}:{turn_index}" if scene_id else ""
+                speaker_tokens, speaker_kind = StoryParser.parse_speaker_label(UNKNOWN_SPEAKER)
                 turns.append(
                     DialogueTurn(
                         turn_id=turn_id,
                         scene_id=scene_id,
                         turn_index=turn_index,
                         speaker=UNKNOWN_SPEAKER,
+                        speaker_tokens=speaker_tokens,
+                        speaker_kind=speaker_kind,
                         text=match.group(0),
                         line_start=line_number,
                         line_end=line_number,
