@@ -12,6 +12,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",
     "typer>=0.24.2",
+    "sudachipy>=0.6.11",
+    "sudachidict-core>=20260428",
 ]
 
 [project.scripts]

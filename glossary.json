@@ -14,7 +14,8 @@
     "桂城泉": "Izumi Katsuragi",
     "錦上マイカ": "Maika Kinjo",
     "令沢葵": "Aoi Reisawa",
-    "紫輪みおん": "Mion Shinowa"
+    "紫輪みおん": "Mion Shinowa",
+    "広実": "Hiromi"
   },
   "units": {
     "スリーズブーケ": "Cerise Bouquet",
@@ -24,12 +25,8 @@
   },
   "locations_and_terms": {
     "蓮ノ空女学院": "Hasunosora Girls' High School",
+    "瑞河女子高等学校": "Mizukawa Girls' School",
     "スクールアイドルクラブ": "School Idol Club",
     "金沢": "Kanazawa"
-  },
-  "honorifics_and_nicknames": {
-    "めぐちゃん": "Megu-chan (Megumi)",
-    "慈ちゃん": "Megu-chan (Megumi)",
-    "るりちゃん": "Ruri-chan (Rurino)"
   }
 }

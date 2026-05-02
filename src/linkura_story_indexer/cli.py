@@ -20,6 +20,11 @@ from .database import (
     initialize_ingest_settings,
     initialize_settings,
 )
+from .glossary_candidates import (
+    DEFAULT_GLOSSARY_CANDIDATE_FILE,
+    category_counts,
+    extract_glossary_candidates,
+)
 from .indexer.chunker import (
     CHUNKER_VERSION,
     MAX_CHUNK_CHARS,
@@ -309,6 +314,52 @@ def extract_state(
     
     extractor = StateExtractor(source_db_path=source_db)
     extractor.extract_from_sources(output_file=output_file)
+
+@app.command("extract-glossary-candidates")
+def extract_glossary_candidates_command(
+    story_dir: str = typer.Option("story", help="Directory containing story files"),
+    glossary_file: str = typer.Option("glossary.json", help="Existing curated glossary file"),
+    output_file: str = typer.Option(
+        DEFAULT_GLOSSARY_CANDIDATE_FILE,
+        help="Path to write candidate glossary terms",
+    ),
+    min_count: int = typer.Option(2, help="Minimum frequency required for a candidate"),
+    max_examples: int = typer.Option(3, help="Maximum example lines to keep per candidate"),
+    max_files: int = typer.Option(10, help="Maximum file paths to keep per candidate"),
+    include_katakana_terms: bool = typer.Option(
+        False,
+        "--include-katakana-terms/--proper-nouns-only",
+        help="Also include common katakana terms that are not tagged as proper nouns",
+    ),
+    include_existing: bool = typer.Option(
+        False,
+        "--include-existing/--skip-existing",
+        help="Include terms already present in the curated glossary",
+    ),
+):
+    """Extracts Japanese proper-noun candidates for manual glossary curation."""
+    story_path = Path(story_dir)
+    if not story_path.exists():
+        console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
+        raise typer.Exit(1)
+
+    candidates = extract_glossary_candidates(
+        story_dir=story_path,
+        glossary_file=Path(glossary_file),
+        output_file=Path(output_file),
+        min_count=min_count,
+        max_examples=max_examples,
+        max_files=max_files,
+        include_katakana_terms=include_katakana_terms,
+        include_existing=include_existing,
+    )
+    counts = category_counts(candidates)
+    count_summary = ", ".join(
+        f"{category}: {count}" for category, count in sorted(counts.items())
+    )
+    console.print(f"Wrote {len(candidates)} glossary candidates to {output_file}.")
+    if count_summary:
+        console.print(f"By category: {count_summary}")
 
 @app.command()
 def ingest(
