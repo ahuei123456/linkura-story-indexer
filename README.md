@@ -39,3 +39,39 @@ the Chroma index. The default `gemini-embedding-2` path uses inline retrieval
 instructions (`title: ... | text: ...` for documents and
 `task: search result | query: ...` for queries), which should not be mixed with
 older vectors created from raw text or from a different embedding model.
+
+## Summary Reader
+
+Export the cached Year, Episode, and Part summaries to a static reader:
+
+```powershell
+.\scripts\export-summary-reader.ps1
+```
+
+```bash
+./scripts/export-summary-reader.sh
+```
+
+Preview locally with:
+
+```powershell
+.\scripts\export-summary-reader.ps1 -Serve -Port 8000
+```
+
+```bash
+./scripts/export-summary-reader.sh --serve --port 8000
+```
+
+Deployment notes for self-hosting and GitHub Pages are in
+`docs\summary-reader-deploy.md`.
+
+The original production page from `Linkura Summaries.zip` is also preserved
+under `web\summary-reader-production`. Export that variant with:
+
+```powershell
+.\scripts\export-production-summary-reader.ps1
+```
+
+```bash
+./scripts/export-production-summary-reader.sh
+```
