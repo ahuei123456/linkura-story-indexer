@@ -51,6 +51,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Generated ingestion state
+ingestion_manifest.json
+
 # Translations
 *.mo
 *.pot
