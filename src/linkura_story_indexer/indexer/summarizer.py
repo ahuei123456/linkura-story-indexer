@@ -14,7 +14,194 @@ from .manifest import (
     stable_hash,
 )
 
-SUMMARIZATION_PROMPT_VERSION = "1"
+SUMMARIZATION_PROMPT_VERSION = "2"
+
+PART_SUMMARY_SECTIONS = (
+    "Overview",
+    "Key Events",
+    "Character Developments",
+    "Continuity Facts",
+    "Important Terms",
+)
+EPISODE_SUMMARY_SECTIONS = (
+    "Overview",
+    "Episode Arc",
+    "Character Developments",
+    "Relationship / Unit Developments",
+    "Continuity Facts",
+    "Important Terms",
+)
+YEAR_SUMMARY_SECTIONS = (
+    "Overview",
+    "Episode Index",
+    "Character Trajectories",
+    "Unit / Club State",
+    "Continuity Facts",
+    "Important Terms",
+)
+SUMMARY_SECTIONS_BY_LEVEL = {
+    "Part": PART_SUMMARY_SECTIONS,
+    "Episode": EPISODE_SUMMARY_SECTIONS,
+    "Year": YEAR_SUMMARY_SECTIONS,
+}
+KNOWN_SUMMARY_SECTIONS = frozenset(
+    PART_SUMMARY_SECTIONS + EPISODE_SUMMARY_SECTIONS + YEAR_SUMMARY_SECTIONS
+)
+
+
+def extract_summary_sections(summary: str) -> dict[str, str]:
+    """Extract known fixed-label summary sections from generated Markdown."""
+    sections: dict[str, list[str]] = {}
+    current_label: str | None = None
+
+    for line in summary.splitlines():
+        stripped = line.strip()
+        if stripped.endswith(":") and stripped[:-1] in KNOWN_SUMMARY_SECTIONS:
+            current_label = stripped[:-1]
+            sections.setdefault(current_label, [])
+            continue
+
+        if current_label is not None:
+            sections[current_label].append(line)
+
+    return {label: "\n".join(lines).strip() for label, lines in sections.items()}
+
+
+def trim_previous_summary_context(prev_summary: str | None) -> str | None:
+    """Keep only previous sections useful for resolving current references."""
+    if not prev_summary:
+        return None
+
+    sections = extract_summary_sections(prev_summary)
+    trimmed_parts = []
+    for label in ("Overview", "Continuity Facts"):
+        content = sections.get(label)
+        if content:
+            trimmed_parts.append(f"{label}:\n{content}")
+
+    if not trimmed_parts:
+        return None
+
+    return "\n\n".join(trimmed_parts)
+
+
+def _summary_input_label(level_name: str) -> str:
+    if level_name == "Part":
+        return "CURRENT PART TEXT (RAW PARSED STORY TEXT)"
+    if level_name == "Episode":
+        return "CURRENT EPISODE INPUT (STRUCTURED PART SUMMARIES)"
+    if level_name == "Year":
+        return "CURRENT YEAR INPUT (STRUCTURED EPISODE SUMMARIES)"
+    return f"CURRENT {level_name.upper()} INPUT"
+
+
+def _summary_input_instructions(level_name: str) -> str:
+    if level_name == "Part":
+        return (
+            "The current Part input is raw parsed story text. Summarize only the current "
+            "part's source text, using previous context only when needed to understand references."
+        )
+    if level_name == "Episode":
+        return (
+            "The current Episode input is multiple structured Part summaries. Synthesize across "
+            "the child Part summaries into one episode-level summary. Do not concatenate, copy, "
+            "or preserve child section structures verbatim."
+        )
+    if level_name == "Year":
+        return (
+            "The current Year input is multiple structured Episode summaries. Synthesize across "
+            "the child Episode summaries into a year-level episode routing index and status "
+            "summary. Do not concatenate, copy, or preserve child section structures verbatim."
+        )
+    return f"The current input is a {level_name}."
+
+
+def _global_summary_format_rules() -> str:
+    return """Global formatting rules:
+- Write all summaries in clear, concise English.
+- Use official glossary translations whenever available.
+- Use exactly the required section labels for the tier.
+- Always emit every required section.
+- If a bullet-list section has no applicable entries, write exactly `- None`.
+- Do not use Markdown headings, bold text, numbered lists, tables, or extra sections.
+- Use bullet lists only under list sections.
+- Important Terms should include glossary-mapped terms when relevant, plus salient new entities encountered in the text. It should not dump the full glossary."""
+
+
+def _summary_format_instructions(level_name: str) -> str:
+    if level_name == "Part":
+        return """Required Part summary format:
+
+Overview:
+[Current-style detailed prose summary, usually 4-8 paragraphs for substantive parts; shorter only if the source is very short. Focus on concrete scene progression, character actions, locations, and immediate outcomes. Do not compress for brevity.]
+
+Key Events:
+- Chronological event.
+- Chronological event.
+- Chronological event.
+
+Character Developments:
+- Character Name: concrete emotional, relational, or goal-state change.
+- Character Name: concrete emotional, relational, or goal-state change.
+
+Continuity Facts:
+- Stable fact, promise, conflict, reveal, relationship change, location, event result, or setup for later.
+- Stable fact, promise, conflict, reveal, relationship change, location, event result, or setup for later.
+
+Important Terms:
+- Characters, unit names, locations, events, songs, apps, competitions, notable Japanese/English aliases."""
+
+    if level_name == "Episode":
+        return """Required Episode summary format:
+
+Overview:
+[A detailed prose recap of the whole episode. Preserve the current useful length. Focus on the episode's central conflict, progression, turning points, and resolution. Do not compress into a short abstract.]
+
+Episode Arc:
+- Setup: ...
+- Escalation: ...
+- Turning Point: ...
+- Resolution: ...
+- Aftermath / Setup: ...
+
+Character Developments:
+- Character Name: what changes for them across the episode.
+- Character Name: what changes for them across the episode.
+
+Relationship / Unit Developments:
+- Pair, group, or unit: how the relationship or dynamic changes.
+
+Continuity Facts:
+- Durable facts established by this episode.
+- Promises, conflicts, decisions, outcomes, new goals, event results.
+
+Important Terms:
+- Characters, units, songs, events, locations, apps, competitions, aliases central to this episode."""
+
+    if level_name == "Year":
+        return """Required Year summary format:
+
+Overview:
+[A detailed prose summary of the year's overall narrative movement, club status changes, competitions, graduations/transitions, and recurring themes. Keep episode boundaries clear; do not force unrelated episodes into larger arcs.]
+
+Episode Index:
+- Episode Name: central conflict and outcome in one line, about 20-30 words.
+- Episode Name: central conflict and outcome in one line, about 20-30 words.
+
+Character Trajectories:
+- Character Name: year-long growth, setbacks, role changes, relationships, goals.
+- Character Name: year-long growth, setbacks, role changes, relationships, goals.
+
+Unit / Club State:
+- Unit or club: membership, creative direction, conflicts, achievements, public status.
+
+Continuity Facts:
+- Year-level or cross-episode facts only: final states, competition results, graduations/transitions, promises, unresolved threads, and rare genuine multi-episode arcs.
+
+Important Terms:
+- Up to 15 major recurring or year-routing terms."""
+
+    raise ValueError(f"Unsupported summary level: {level_name}")
 
 
 def episode_sort_key(ep_key_tuple: tuple) -> tuple:
@@ -78,12 +265,17 @@ class HierarchicalSummarizer:
         self.story_order = story_order or default_story_order()
         self.cache_context = cache_context
 
-    def _generate_rolling_summary(self, current_text: str, prev_summary: str | None = None, level_name: str = "Part") -> str:
-        """Calls the LLM to generate a summary using previous context to prevent drift."""
+    def _build_summary_prompt(
+        self,
+        current_text: str,
+        prev_summary: str | None = None,
+        level_name: str = "Part",
+    ) -> tuple[str, str]:
+        """Build the system instructions and prompt for a tier-specific summary."""
         system_content = (
-            f"You are an expert archivist and translator indexing a Japanese narrative story. "
-            f"You must write all summaries in clear, concise ENGLISH.\n"
-            f"Summarize the following {level_name}. Focus on plot progression, character actions, and locations."
+            "You are an expert archivist and translator indexing a Japanese narrative story. "
+            "You must write all summaries in clear, concise ENGLISH.\n"
+            f"Summarize the following {level_name}. Focus on plot progression, character actions, locations, continuity, and retrieval-useful named entities."
         )
 
         if self.glossary:
@@ -94,14 +286,41 @@ class HierarchicalSummarizer:
                 for jp, en in terms.items():
                     system_content += f" - {jp} -> {en}\n"
 
-        prompt = ""
-        if prev_summary:
-            prompt += f"--- PREVIOUS CONTEXT (For Continuity) ---\n{prev_summary}\n\n"
-            prompt += f"--- CURRENT {level_name.upper()} TEXT (IN JAPANESE) ---\n{current_text}\n\n"
-            prompt += f"Write a comprehensive English summary of the CURRENT {level_name.upper()} TEXT. Use the PREVIOUS CONTEXT ONLY to resolve pronouns (e.g., 'she', 'he') and understand the ongoing situation. Do NOT summarize the previous context again."
-        else:
-            prompt += f"--- CURRENT {level_name.upper()} TEXT (IN JAPANESE) ---\n{current_text}\n\n"
-            prompt += f"Write a comprehensive English summary of the CURRENT {level_name.upper()} TEXT."
+        prev_context = trim_previous_summary_context(prev_summary)
+        prompt_parts = []
+        if prev_context:
+            prompt_parts.append(f"--- PREVIOUS CONTEXT (For Continuity) ---\n{prev_context}")
+
+        prompt_parts.extend(
+            [
+                f"--- {_summary_input_label(level_name)} ---\n{current_text}",
+                _summary_input_instructions(level_name),
+            ]
+        )
+
+        if prev_context:
+            prompt_parts.append(
+                "Use previous context only to resolve references, pronouns, chronology, and ongoing situations needed to understand the current input. Do not summarize previous events again, do not copy previous sections, and do not include prior events unless the current input directly depends on them."
+            )
+
+        prompt_parts.extend(
+            [
+                _global_summary_format_rules(),
+                _summary_format_instructions(level_name),
+                f"Write the {level_name} summary now using exactly the required format.",
+            ]
+        )
+
+        return system_content, "\n\n".join(prompt_parts)
+
+    def _generate_rolling_summary(
+        self,
+        current_text: str,
+        prev_summary: str | None = None,
+        level_name: str = "Part",
+    ) -> str:
+        """Calls the LLM to generate a summary using previous context to prevent drift."""
+        system_content, prompt = self._build_summary_prompt(current_text, prev_summary, level_name)
 
         result = create_generation_text_agent(system_content).run_sync(prompt)
         return result.output.strip()
@@ -254,10 +473,11 @@ class HierarchicalSummarizer:
 
                 # Gemini 3 has a massive context window, so we can concatenate the whole part
                 part_text = "\n\n---\n\n".join([n.text for n in scenes])
+                prev_context = trim_previous_summary_context(prev_summary)
                 cache_inputs = self._part_cache_inputs(
                     scenes=scenes,
                     part_text=part_text,
-                    prev_summary=prev_summary,
+                    prev_summary=prev_context,
                 )
                 fingerprint = stable_hash(cache_inputs)
                 cached = _cached_summary(cache, cache_key, fingerprint)
@@ -271,7 +491,7 @@ class HierarchicalSummarizer:
                     # Generate summary with rolling context
                     current_summary = self._generate_rolling_summary(
                         current_text=part_text, 
-                        prev_summary=prev_summary, 
+                        prev_summary=prev_context,
                         level_name="Part"
                     )
                     
@@ -333,11 +553,12 @@ class HierarchicalSummarizer:
             base_meta.part_name = "ALL_PARTS" # Represents the whole episode
 
             combined_text = "\n\n---\n\n".join([f"Part: {n.metadata.part_name}\n{n.text}" for n in parts])
+            prev_context = trim_previous_summary_context(prev_summary)
             cache_inputs = self._aggregate_cache_inputs(
                 level="episode",
                 child_nodes=parts,
                 combined_text=combined_text,
-                prev_summary=prev_summary,
+                prev_summary=prev_context,
             )
             fingerprint = stable_hash(cache_inputs)
             cached = _cached_summary(cache, cache_key, fingerprint)
@@ -350,7 +571,7 @@ class HierarchicalSummarizer:
                 
                 current_summary = self._generate_rolling_summary(
                     current_text=combined_text, 
-                    prev_summary=prev_summary, 
+                    prev_summary=prev_context,
                     level_name="Episode"
                 )
                 
@@ -416,11 +637,12 @@ class HierarchicalSummarizer:
             base_meta.part_name = "ALL_PARTS"
 
             combined_text = "\n\n---\n\n".join([f"Episode: {n.metadata.episode_name}\n{n.text}" for n in episodes])
+            prev_context = trim_previous_summary_context(prev_summary)
             cache_inputs = self._aggregate_cache_inputs(
                 level="year",
                 child_nodes=episodes,
                 combined_text=combined_text,
-                prev_summary=prev_summary,
+                prev_summary=prev_context,
             )
             fingerprint = stable_hash(cache_inputs)
             cached = _cached_summary(cache, cache_key, fingerprint)
@@ -433,7 +655,7 @@ class HierarchicalSummarizer:
                 
                 current_summary = self._generate_rolling_summary(
                     current_text=combined_text, 
-                    prev_summary=prev_summary, 
+                    prev_summary=prev_context,
                     level_name="Year"
                 )
                 

@@ -19,13 +19,19 @@ from linkura_story_indexer.indexer.manifest import (
     IngestionManifest,
     SummaryCacheContext,
     VectorIds,
+    hash_text,
     stable_hash,
 )
 from linkura_story_indexer.indexer.parser import PARSER_VERSION
 from linkura_story_indexer.indexer.processor import StoryProcessor
 from linkura_story_indexer.indexer.summarizer import (
+    EPISODE_SUMMARY_SECTIONS,
+    PART_SUMMARY_SECTIONS,
     SUMMARIZATION_PROMPT_VERSION,
+    YEAR_SUMMARY_SECTIONS,
     HierarchicalSummarizer,
+    extract_summary_sections,
+    trim_previous_summary_context,
 )
 from linkura_story_indexer.lexical import LexicalIndex
 
@@ -198,6 +204,170 @@ def test_summarizer_uses_configured_generation_agent(monkeypatch: pytest.MonkeyP
     assert len(calls) == 1
     assert "expert archivist" in calls[0]["instructions"]
     assert "花帆: こんにちは" in calls[0]["prompt"]
+
+
+@pytest.mark.parametrize(
+    ("level_name", "required_sections"),
+    [
+        ("Part", PART_SUMMARY_SECTIONS),
+        ("Episode", EPISODE_SUMMARY_SECTIONS),
+        ("Year", YEAR_SUMMARY_SECTIONS),
+    ],
+)
+def test_summary_prompt_includes_required_tier_sections(
+    level_name: str,
+    required_sections: tuple[str, ...],
+) -> None:
+    _, prompt = HierarchicalSummarizer()._build_summary_prompt(
+        "source text",
+        level_name=level_name,
+    )
+
+    for section in required_sections:
+        assert f"{section}:" in prompt
+
+    assert "Always emit every required section." in prompt
+    assert "If a bullet-list section has no applicable entries, write exactly `- None`." in prompt
+    assert "Do not use Markdown headings, bold text, numbered lists, tables, or extra sections." in prompt
+
+
+@pytest.mark.parametrize(
+    ("level_name", "input_phrase"),
+    [
+        ("Episode", "The current Episode input is multiple structured Part summaries."),
+        ("Year", "The current Year input is multiple structured Episode summaries."),
+    ],
+)
+def test_aggregate_summary_prompts_describe_structured_child_inputs(
+    level_name: str,
+    input_phrase: str,
+) -> None:
+    _, prompt = HierarchicalSummarizer()._build_summary_prompt(
+        "child summaries",
+        level_name=level_name,
+    )
+
+    assert input_phrase in prompt
+    assert "Do not concatenate, copy, or preserve child section structures verbatim." in prompt
+    assert f"CURRENT {level_name.upper()} INPUT (STRUCTURED" in prompt
+    assert f"CURRENT {level_name.upper()} TEXT (IN JAPANESE)" not in prompt
+
+
+def test_extract_summary_sections_parses_llm_style_output() -> None:
+    output = """Overview:
+Kaho starts the scene uncertain.
+
+She regains her footing after talking with Sayaka.
+
+Key Events:
+- Kaho arrives at the club room.
+- Sayaka asks what changed.
+
+Character Developments:
+- Kaho: becomes more willing to ask for help.
+
+Continuity Facts:
+- The club room remains the meeting point.
+
+Important Terms:
+- Kaho Hinoshita
+- Sayaka Murano
+"""
+
+    sections = extract_summary_sections(output)
+
+    assert sections["Overview"].startswith("Kaho starts")
+    assert "She regains her footing" in sections["Overview"]
+    assert sections["Key Events"].splitlines() == [
+        "- Kaho arrives at the club room.",
+        "- Sayaka asks what changed.",
+    ]
+    assert sections["Continuity Facts"] == "- The club room remains the meeting point."
+
+
+def test_trim_previous_summary_context_keeps_only_overview_and_continuity() -> None:
+    previous = """Overview:
+Earlier overview.
+
+Key Events:
+- Should be excluded.
+
+Character Developments:
+- Should also be excluded.
+
+Continuity Facts:
+- Durable setup.
+
+Important Terms:
+- Kaho
+"""
+
+    trimmed = trim_previous_summary_context(previous)
+
+    assert trimmed == "Overview:\nEarlier overview.\n\nContinuity Facts:\n- Durable setup."
+
+
+def test_part_cache_fingerprint_uses_trimmed_previous_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    story_root = tmp_path / "story"
+    first_path = _write_story_file(
+        story_root,
+        "103/第1話『花咲きたい！』/1.md",
+        "花帆: こんにちは",
+    )
+    second_path = _write_story_file(
+        story_root,
+        "103/第1話『花咲きたい！』/2.md",
+        "さやか: どうしたの？",
+    )
+    raw_nodes = [
+        *StoryProcessor.process_file(first_path),
+        *StoryProcessor.process_file(second_path),
+    ]
+    cache_file = tmp_path / "summaries_cache.json"
+
+    def fake_generate(
+        self: HierarchicalSummarizer,
+        current_text: str,
+        prev_summary: str | None = None,
+        level_name: str = "Part",
+    ) -> str:
+        return f"""Overview:
+{level_name} overview for {current_text}
+
+Key Events:
+- Excluded from previous context.
+
+Character Developments:
+- None
+
+Continuity Facts:
+- Durable context for {level_name}.
+
+Important Terms:
+- Kaho
+"""
+
+    monkeypatch.setattr(HierarchicalSummarizer, "_generate_rolling_summary", fake_generate)
+
+    HierarchicalSummarizer(cache_context=_cache_context(first_path)).summarize_parts(
+        raw_nodes,
+        cache_file=str(cache_file),
+    )
+
+    cache = json.loads(cache_file.read_text(encoding="utf-8"))
+    second_entry = cache["103|Main|第1話『花咲きたい！』|2"]
+    expected_previous_context = """Overview:
+Part overview for 花帆: こんにちは
+
+Continuity Facts:
+- Durable context for Part."""
+
+    assert second_entry["inputs"]["previous_summary_hash"] == hash_text(
+        expected_previous_context
+    )
 
 
 def test_default_generation_context_preserves_legacy_summary_fingerprint_shape(
