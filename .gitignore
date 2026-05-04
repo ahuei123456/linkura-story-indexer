@@ -217,11 +217,14 @@ config.json
 
 # Story Indexer Artifacts
 chroma_db/
+Linkura Summaries.zip
 summaries_cache.json
 world_state.json
 lexical_index.db
 source_records.db
 glossary_candidates.json
+web/summary-reader/data/
+web/summary-reader-production/data/
 
 # LLM stuff
 .claude/

@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linkura Summary Reader</title>
+  <style>
+    :root {
+      --bg: #f6f7f2;
+      --panel: #ffffff;
+      --panel-soft: #eef4f1;
+      --ink: #20242a;
+      --muted: #66707a;
+      --line: #d9ded8;
+      --accent: #2f766d;
+      --accent-strong: #1f5e56;
+      --gold: #a76b25;
+      --blue: #4b628c;
+      --danger: #9b3d35;
+      --shadow: 0 12px 32px rgba(31, 43, 39, 0.12);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+    button, input {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+      height: 100vh;
+      height: 100dvh;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+      background: #fbfcf9;
+    }
+
+    .sidebar-header {
+      flex: 0 0 auto;
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      font-weight: 760;
+    }
+
+    .counts {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    .search {
+      width: 100%;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 11px;
+      background: var(--panel);
+      color: var(--ink);
+      outline: none;
+    }
+
+    .search:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(47, 118, 109, 0.12);
+    }
+
+    .tier-filter {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      margin-top: 10px;
+    }
+
+    .tier-filter button,
+    .section-jump button {
+      min-height: 30px;
+      border-radius: 6px;
+      background: #eef1ea;
+      color: #394048;
+      cursor: pointer;
+    }
+
+    .tier-filter button.active,
+    .section-jump button.active {
+      background: var(--accent);
+      color: white;
+    }
+
+    .nav {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 8px 18px;
+      overscroll-behavior: contain;
+    }
+
+    .tree-row,
+    .result-row {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      align-items: start;
+      width: 100%;
+      min-height: 32px;
+      border-radius: 6px;
+      padding: 5px 8px;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .tree-row:hover,
+    .result-row:hover {
+      background: #edf1eb;
+    }
+
+    .tree-row.selected,
+    .result-row.selected {
+      background: var(--panel-soft);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .twisty {
+      width: 20px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .tree-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      line-height: 22px;
+    }
+
+    .tree-row[data-depth="0"] .tree-label {
+      font-weight: 760;
+    }
+
+    .tree-row[data-depth="1"] .tree-label {
+      font-weight: 620;
+    }
+
+    .tree-row[data-depth="2"] .tree-label {
+      color: #48515a;
+      font-size: 13px;
+    }
+
+    .results-title {
+      margin: 8px 8px 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .result-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+      margin-bottom: 4px;
+    }
+
+    .result-row strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .result-row span {
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .reader {
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: auto;
+      overscroll-behavior: contain;
+      background:
+        linear-gradient(90deg, rgba(47, 118, 109, 0.08), transparent 38%),
+        var(--bg);
+    }
+
+    .reader-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+
+    .reader-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .breadcrumb {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 8px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+
+    .meta-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      max-width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: rgba(255, 255, 255, 0.75);
+      color: #3c444b;
+      font-size: 12px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .chip.tier-year { border-color: rgba(47, 118, 109, 0.35); color: var(--accent-strong); }
+    .chip.tier-episode { border-color: rgba(167, 107, 37, 0.35); color: #7b511f; }
+    .chip.tier-part { border-color: rgba(75, 98, 140, 0.35); color: #394d76; }
+
+    .section-jump {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+      max-width: 430px;
+    }
+
+    .content-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .sections {
+      display: grid;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section h2 {
+      margin: 0;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      font-size: 15px;
+      line-height: 1.35;
+      background: #fafbf8;
+    }
+
+    .section-body {
+      padding: 16px;
+      line-height: 1.72;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .section.overview .section-body {
+      font-size: 16px;
+      line-height: 1.78;
+      max-width: 82ch;
+    }
+
+    .side-panel {
+      position: sticky;
+      top: 18px;
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .info-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.82);
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .info-box h2 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+
+    .terms {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .term {
+      border-radius: 999px;
+      background: #eef1ea;
+      color: #344048;
+      padding: 4px 8px;
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 60vh;
+      color: var(--muted);
+      text-align: center;
+      padding: 24px;
+    }
+
+    .error {
+      color: var(--danger);
+    }
+
+    @media (max-width: 860px) {
+      body { overflow: auto; }
+      .app {
+        height: auto;
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+        overflow: visible;
+      }
+      .sidebar {
+        max-height: 48vh;
+        height: 48vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .reader {
+        overflow: visible;
+      }
+      .reader-inner {
+        padding: 18px;
+      }
+      .reader-top,
+      .content-layout {
+        grid-template-columns: 1fr;
+      }
+      .section-jump {
+        justify-content: flex-start;
+        max-width: none;
+      }
+      .side-panel {
+        position: static;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <h1>Linkura Summary Reader</h1>
+          <div class="counts" id="counts"></div>
+        </div>
+        <input class="search" id="search" type="search" placeholder="Search summaries and terms" autocomplete="off">
+        <div class="tier-filter" id="tierFilter" aria-label="Summary tier filter">
+          <button type="button" data-tier="All" class="active">All</button>
+          <button type="button" data-tier="Year">Year</button>
+          <button type="button" data-tier="Episode">Episode</button>
+          <button type="button" data-tier="Part">Part</button>
+        </div>
+      </div>
+      <nav class="nav" id="nav" aria-label="Summary navigation"></nav>
+    </aside>
+    <main class="reader">
+      <div class="reader-inner" id="reader">
+        <div class="empty">Loading summaries...</div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      data: null,
+      summariesById: new Map(),
+      selectedId: "",
+      expanded: new Set(),
+      query: "",
+      tier: "All",
+    };
+
+    const tierClass = {
+      Year: "tier-year",
+      Episode: "tier-episode",
+      Part: "tier-part",
+    };
+
+    function text(value) {
+      return value == null ? "" : String(value);
+    }
+
+    function slug(value) {
+      return text(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    }
+
+    function getNode(nodeId) {
+      return state.data?.nodes?.[nodeId] || null;
+    }
+
+    function getSummary(summaryId) {
+      return state.summariesById.get(summaryId) || null;
+    }
+
+    function searchRecordMatches(record) {
+      if (state.tier !== "All" && record.tier !== state.tier) return false;
+      if (!state.query) return true;
+      return record.text.includes(state.query.toLowerCase());
+    }
+
+    function findFirstSummaryId(nodeIds) {
+      for (const nodeId of nodeIds) {
+        const node = getNode(nodeId);
+        if (!node) continue;
+        if (node.summaryId) return node.summaryId;
+        const child = findFirstSummaryId(node.children || []);
+        if (child) return child;
+      }
+      return "";
+    }
+
+    function findPath(nodeIds, summaryId, trail = []) {
+      for (const nodeId of nodeIds) {
+        const node = getNode(nodeId);
+        if (!node) continue;
+        const nextTrail = [...trail, node];
+        if (node.summaryId === summaryId) return nextTrail;
+        const childPath = findPath(node.children || [], summaryId, nextTrail);
+        if (childPath.length) return childPath;
+      }
+      return [];
+    }
+
+    function expandPath(summaryId) {
+      const path = findPath(state.data.roots, summaryId);
+      for (const node of path) {
+        state.expanded.add(node.id);
+      }
+    }
+
+    function selectSummary(summaryId) {
+      if (!summaryId || !state.summariesById.has(summaryId)) return;
+      state.selectedId = summaryId;
+      expandPath(summaryId);
+      render();
+    }
+
+    function renderTreeNode(nodeId, depth) {
+      const node = getNode(nodeId);
+      if (!node) return document.createDocumentFragment();
+      const children = node.children || [];
+      const selected = node.summaryId === state.selectedId;
+      const open = state.expanded.has(node.id);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `tree-row${selected ? " selected" : ""}`;
+      row.dataset.depth = String(depth);
+      row.style.paddingLeft = `${8 + depth * 16}px`;
+      row.innerHTML = `
+        <span class="twisty">${children.length ? (open ? "v" : ">") : ""}</span>
+        <span class="tree-label">${escapeHtml(node.label)}</span>
+      `;
+      row.addEventListener("click", () => {
+        if (children.length) {
+          if (open) state.expanded.delete(node.id);
+          else state.expanded.add(node.id);
+        }
+        if (node.summaryId) state.selectedId = node.summaryId;
+        render();
+      });
+
+      const wrapper = document.createElement("div");
+      wrapper.appendChild(row);
+      if (open) {
+        for (const childId of children) {
+          wrapper.appendChild(renderTreeNode(childId, depth + 1));
+        }
+      }
+      return wrapper;
+    }
+
+    function renderNav() {
+      const nav = document.getElementById("nav");
+      nav.replaceChildren();
+      const matchingRecords = state.data.search.filter(searchRecordMatches);
+
+      if (state.query || state.tier !== "All") {
+        const title = document.createElement("div");
+        title.className = "results-title";
+        title.textContent = `${matchingRecords.length} results`;
+        nav.appendChild(title);
+        for (const record of matchingRecords) {
+          const summary = getSummary(record.summaryId);
+          if (!summary) continue;
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = `result-row${summary.id === state.selectedId ? " selected" : ""}`;
+          row.innerHTML = `
+            <strong>${escapeHtml(summary.title)}</strong>
+            <span>${escapeHtml(summary.tier)} / ${escapeHtml(summary.meta.cacheKey)}</span>
+          `;
+          row.addEventListener("click", () => selectSummary(summary.id));
+          nav.appendChild(row);
+        }
+        return;
+      }
+
+      for (const rootId of state.data.roots) {
+        nav.appendChild(renderTreeNode(rootId, 0));
+      }
+    }
+
+    function renderReader() {
+      const reader = document.getElementById("reader");
+      const summary = getSummary(state.selectedId);
+      if (!summary) {
+        reader.innerHTML = '<div class="empty">Select a summary from the navigation.</div>';
+        return;
+      }
+
+      const path = findPath(state.data.roots, summary.id);
+      const breadcrumb = path.map((node) => node.label).join(" / ");
+      const sectionLabels = summary.sectionOrder || Object.keys(summary.sections || {});
+      const sectionButtons = sectionLabels.map((label, index) => {
+        const id = `section-${index}-${slug(label)}`;
+        return `<button type="button" data-target="${id}">${escapeHtml(label)}</button>`;
+      }).join("");
+      const sectionHtml = sectionLabels.map((label, index) => {
+        const id = `section-${index}-${slug(label)}`;
+        const overviewClass = label === "Overview" ? " overview" : "";
+        return `
+          <section class="section${overviewClass}" id="${id}">
+            <h2>${escapeHtml(label)}</h2>
+            <div class="section-body">${escapeHtml(summary.sections?.[label] || "- None")}</div>
+          </section>
+        `;
+      }).join("");
+      const terms = (summary.importantTerms || []).map((term) => `<span class="term">${escapeHtml(term)}</span>`).join("");
+
+      reader.innerHTML = `
+        <div class="reader-top">
+          <div>
+            <div class="breadcrumb">${escapeHtml(breadcrumb)}</div>
+            <h1 class="title">${escapeHtml(summary.title)}</h1>
+            <div class="meta-grid">
+              <span class="chip ${tierClass[summary.tier] || ""}">${escapeHtml(summary.tier)} summary</span>
+              <span class="chip">Arc ${escapeHtml(summary.meta.arcId)}</span>
+              <span class="chip">${escapeHtml(summary.meta.storyType)}</span>
+              <span class="chip">${escapeHtml(summary.meta.episodeName)}</span>
+              <span class="chip">Part ${escapeHtml(summary.meta.partName)}</span>
+              <span class="chip">Cache ${escapeHtml(summary.meta.cacheKey)}</span>
+            </div>
+          </div>
+          <div class="section-jump" id="sectionJump">${sectionButtons}</div>
+        </div>
+        <div class="content-layout">
+          <div class="sections">${sectionHtml}</div>
+          <aside class="side-panel">
+            <div class="info-box">
+              <h2>Important Terms</h2>
+              <div class="terms">${terms || '<span class="term">None</span>'}</div>
+            </div>
+            <div class="info-box">
+              <h2>Generation Metadata</h2>
+              <div class="meta-grid">
+                <span class="chip">Schema ${escapeHtml(summary.meta.summaryCacheSchemaVersion || "unknown")}</span>
+                <span class="chip">Input ${escapeHtml(summary.meta.inputLevel || "unknown")}</span>
+                <span class="chip">Chat ${escapeHtml(summary.meta.models?.chat || "unknown")}</span>
+                <span class="chip">Embedding ${escapeHtml(summary.meta.models?.embedding || "unknown")}</span>
+                <span class="chip">Fingerprint ${escapeHtml(summary.meta.fingerprint || "unknown")}</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      `;
+
+      document.querySelectorAll("#sectionJump button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const target = document.getElementById(button.dataset.target);
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+    }
+
+    function renderCounts() {
+      const counts = state.data.counts || {};
+      document.getElementById("counts").textContent =
+        `${counts.years || 0} years / ${counts.episodes || 0} episodes / ${counts.parts || 0} parts`;
+    }
+
+    function render() {
+      renderCounts();
+      renderNav();
+      renderReader();
+    }
+
+    function escapeHtml(value) {
+      return text(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    document.getElementById("search").addEventListener("input", (event) => {
+      state.query = event.target.value.trim();
+      renderNav();
+    });
+
+    document.getElementById("tierFilter").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-tier]");
+      if (!button) return;
+      state.tier = button.dataset.tier;
+      document.querySelectorAll("#tierFilter button").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      renderNav();
+    });
+
+    fetch("data/summaries.json")
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((data) => {
+        state.data = data;
+        state.summariesById = new Map(Object.entries(data.summaries || {}));
+        state.selectedId = findFirstSummaryId(data.roots || []);
+        expandPath(state.selectedId);
+        render();
+      })
+      .catch((error) => {
+        document.getElementById("reader").innerHTML = `
+          <div class="empty error">
+            Could not load data/summaries.json. Run the export script first.<br>
+            ${escapeHtml(error.message)}
+          </div>
+        `;
+      });
+  </script>
+</body>
+</html>
