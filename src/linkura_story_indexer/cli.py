@@ -53,6 +53,12 @@ from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
 from .query.engine import StoryQueryEngine
 from .story_order import StoryOrder, default_story_order, load_story_order
+from .summary_export import (
+    DEFAULT_PRODUCTION_READER_SOURCE,
+    DEFAULT_READER_TEMPLATE,
+    export_production_summary_reader,
+    export_summary_reader,
+)
 
 app = typer.Typer()
 console = Console()
@@ -360,6 +366,62 @@ def extract_glossary_candidates_command(
     console.print(f"Wrote {len(candidates)} glossary candidates to {output_file}.")
     if count_summary:
         console.print(f"By category: {count_summary}")
+
+@app.command("export-summary-reader")
+def export_summary_reader_command(
+    cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),
+    output_dir: str = typer.Option(
+        "site/summary-reader",
+        help="Directory to write the static reader site",
+    ),
+    story_order_file: str = typer.Option("story_order.yaml", help="Path to story order YAML"),
+    template_file: str = typer.Option(
+        str(DEFAULT_READER_TEMPLATE),
+        help="Path to the summary reader HTML template",
+    ),
+):
+    """Exports cached structured summaries as a static browser reader."""
+    try:
+        story_order = load_story_order(story_order_file)
+        destination = export_summary_reader(
+            cache_file=cache_file,
+            output_dir=output_dir,
+            story_order=story_order,
+            template_file=template_file,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold green]Summary reader exported to {destination}[/bold green]")
+
+@app.command("export-production-summary-reader")
+def export_production_summary_reader_command(
+    cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),
+    output_dir: str = typer.Option(
+        "site/summary-reader-production",
+        help="Directory to write the static production reader site",
+    ),
+    story_order_file: str = typer.Option("story_order.yaml", help="Path to story order YAML"),
+    source_dir: str = typer.Option(
+        str(DEFAULT_PRODUCTION_READER_SOURCE),
+        help="Path to the production reader source directory",
+    ),
+):
+    """Exports the zip production summary reader as a static site."""
+    try:
+        story_order = load_story_order(story_order_file)
+        destination = export_production_summary_reader(
+            cache_file=cache_file,
+            output_dir=output_dir,
+            story_order=story_order,
+            source_dir=source_dir,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[bold green]Production summary reader exported to {destination}[/bold green]")
 
 @app.command()
 def ingest(

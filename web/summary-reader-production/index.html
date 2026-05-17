@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Linkura Summaries</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Special+Elite&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  body {
+    background: #f5f2ec;
+    font-family: 'Caveat', cursive;
+    color: #1a1a1a;
+    height: 100vh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: repeating-linear-gradient(
+      transparent, transparent 27px,
+      rgba(180,160,120,0.13) 27px, rgba(180,160,120,0.13) 28px
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #root { position: relative; z-index: 1; height: 100vh; display: flex; flex-direction: column; }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+
+  .summary-prose {
+    font-family: 'Caveat', cursive;
+    font-size: 18px;
+    line-height: 1.8;
+    color: #2a2a2a;
+    white-space: pre-wrap;
+  }
+
+  .summary-prose h2 {
+    font-family: 'Special Elite', cursive;
+    font-size: 16px;
+    font-weight: 400;
+    letter-spacing: 0.06em;
+    color: #888;
+    text-transform: uppercase;
+    margin: 20px 0 6px;
+  }
+
+  .fade-in {
+    animation: fadeIn 0.25s ease;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+// ── DATA ADAPTER ─────────────────────────────────────────────────────────────
+// The export writes normalized schema-v2 reader data. This page adapts it into
+// the original handwritten tree/card component shape.
+
+function formatSummaryText(summary) {
+  if (!summary) return '';
+  const labels = summary.sectionOrder || Object.keys(summary.sections || {});
+  return labels.map(label => `${label}:\n${summary.sections?.[label] || '- None'}`).join('\n\n');
+}
+
+function overviewFromSummary(summary) {
+  return summary?.sections?.Overview || '';
+}
+
+function termLabel(arcId) {
+  const labels = { '102': '102nd Term', '103': '103rd Term', '104': '104th Term', '105': '105th Term' };
+  return labels[arcId] || `Arc ${arcId}`;
+}
+
+function episodeNumber(episodeName) {
+  const match = String(episodeName || '').match(/第(\d+)話/);
+  return match ? Number(match[1]) : null;
+}
+
+function episodeTitle(episodeName) {
+  const match = String(episodeName || '').match(/『(.+)』/);
+  return match ? match[1] : episodeName;
+}
+
+function overviewBlurb(summary) {
+  const overview = overviewFromSummary(summary).replace(/\s+/g, ' ').trim();
+  if (overview.length <= 220) return overview;
+  const sentence = overview.match(/^(.+?[.!?])\s/);
+  if (sentence && sentence[1].length <= 220) return sentence[1];
+  return overview.slice(0, 217).trimEnd() + '...';
+}
+
+function adaptReaderData(data) {
+  function buildNode(nodeId, depth) {
+    const node = data.nodes[nodeId];
+    const summary = node.summaryId ? data.summaries[node.summaryId] : null;
+    const epNum = node.kind === 'episode' ? episodeNumber(node.episodeName) : null;
+    return {
+      id: node.id,
+      label: node.kind === 'year'
+        ? termLabel(summary?.meta?.arcId || node.id.replace('year:', ''))
+        : node.kind === 'episode' && epNum
+          ? `Ep ${epNum}`
+          : node.label,
+      title: node.kind === 'episode' ? episodeTitle(node.episodeName) : null,
+      meta: node.kind === 'episode' ? node.episodeName : null,
+      cacheKey: node.summaryId,
+      summary,
+      summaryText: formatSummaryText(summary),
+      blurb: node.kind === 'episode' ? overviewBlurb(summary) : null,
+      depth,
+      isLeaf: node.kind === 'part',
+      children: (node.children || []).map(childId => buildNode(childId, depth + 1)),
+    };
+  }
+  return (data.roots || []).map(rootId => buildNode(rootId, 0));
+}
+
+// ── EXTRACT OVERVIEW ──────────────────────────────────────────────────────────
+function extractOverview(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  let inOverview = false;
+  const overviewLines = [];
+  for (const line of lines) {
+    if (line.trim() === 'Overview:') { inOverview = true; continue; }
+    if (inOverview) {
+      if (line.match(/^[A-Z][A-Za-z ]+:$/) && line.trim() !== '') break;
+      overviewLines.push(line);
+    }
+  }
+  // If no Overview: header found, return first paragraph block
+  if (!inOverview) {
+    const firstBlock = text.split(/\n{2,}/)[0];
+    return firstBlock.trim();
+  }
+  return overviewLines.join('\n').trim();
+}
+
+function OverviewText({ text }) {
+  const overview = extractOverview(text);
+  return (
+    <p className="summary-prose" style={{ whiteSpace: 'pre-wrap' }}>{overview}</p>
+  );
+}
+
+// ── ICONS ─────────────────────────────────────────────────────────────────────
+function ChevronIcon({ open }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+      style={{ transition: 'transform 0.18s', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', flexShrink: 0 }}>
+      <polyline points="3,1 9,6 3,11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ animation: 'spin 0.8s linear infinite' }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="20 18" strokeLinecap="round"/>
+    </svg>
+  );
+}
+
+// ── SIDEBAR TREE NODE ─────────────────────────────────────────────────────────
+function TreeNode({ node, depth, selectedId, onSelect, expandedIds, onToggle }) {
+  // Don't render part nodes (isLeaf) in sidebar
+  if (node.isLeaf) return null;
+  const isSelected = selectedId === node.id;
+  const isExpanded = !!expandedIds[node.id];
+  const children = node.children || [];
+  const visibleChildren = children.filter(child => !child.isLeaf);
+  const hasVisibleChildren = visibleChildren.length > 0;
+  const indent = depth * 8;
+
+  return (
+    <div>
+      <div
+        onClick={() => { onSelect(node); }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5,
+          paddingLeft: 10 + indent, paddingRight: 10,
+          paddingTop: depth === 0 ? 8 : 5, paddingBottom: depth === 0 ? 8 : 5,
+          cursor: 'pointer',
+          overflow: 'hidden',
+          whiteSpace: 'nowrap',
+          background: isSelected ? 'rgba(0,0,0,0.09)' : 'transparent',
+          borderLeft: isSelected ? '3px solid #2a2a2a' : '3px solid transparent',
+          fontFamily: 'Caveat, cursive',
+          fontSize: depth === 0 ? 17 : depth === 1 ? 15 : 13,
+          fontWeight: depth === 0 ? 700 : depth === 1 ? 600 : 400,
+          color: isSelected ? '#1a1a1a' : depth === 0 ? '#222' : '#555',
+          userSelect: 'none',
+          lineHeight: 1.25,
+          transition: 'background 0.12s',
+        }}
+        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; }}
+        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+      >
+        {hasVisibleChildren
+          ? <ChevronIcon open={isExpanded} />
+          : <span style={{ width: 12, flexShrink: 0 }} />}
+        <span style={{ lineHeight: 1.25, whiteSpace: 'nowrap' }}>{node.label}</span>
+      </div>
+      {hasVisibleChildren && isExpanded && (
+        <div>
+          {visibleChildren.map(child => (
+            <TreeNode key={child.id} node={child} depth={depth + 1}
+              selectedId={selectedId} onSelect={onSelect}
+              expandedIds={expandedIds}
+              onToggle={onToggle} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── EXPANDABLE SUMMARY CARD ───────────────────────────────────────────────────
+function SummaryCard({ node, onNavigate, accent }) {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleOpen = async () => {
+    const next = !open;
+    setOpen(next);
+    // If there's a blurb, no need to fetch — use it directly
+    if (next && !summary) {
+      if (node.blurb) {
+        setSummary(node.blurb);
+      } else {
+        setSummary(extractOverview(node.summaryText || ''));
+        setLoading(false);
+      }
+    }
+  };
+
+  const depth = node.depth || 0;
+  const openLabel = depth === 1 ? 'Open Episode' : null;
+
+  return (
+    <div style={{
+      border: '2px solid #1a1a1a', borderRadius: 3,
+      background: open ? '#fffdf7' : '#faf7f0',
+      marginBottom: 12,
+      boxShadow: '3px 3px 0 #c8c0b0',
+      overflow: 'hidden',
+    }}>
+      {/* Card header — always visible */}
+      <div onClick={handleOpen} style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '11px 16px', cursor: 'pointer', userSelect: 'none',
+      }}>
+        <div style={{ flex: 1 }}>
+          <span style={{ fontFamily: 'Caveat, cursive', fontWeight: 700, fontSize: 17, color: '#1a1a1a' }}>
+            {node.label}
+          </span>
+          {node.title && (
+            <span style={{ fontFamily: 'Caveat, cursive', fontSize: 16, color: '#555', marginLeft: 6 }}>
+              {node.title}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'Caveat, cursive', fontSize: 13, color: '#888' }}>
+          {loading && <SpinnerIcon />}
+          {open ? 'collapse' : 'expand'}
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+            style={{ transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+            <polyline points="2,4 7,10 12,4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      </div>
+
+      {/* Expanded: blurb/overview + open button */}
+      {open && (
+        <div className="fade-in" style={{ borderTop: '1.5px dashed #c0b8a8', padding: '14px 18px 16px' }}>
+          {loading
+            ? <div style={{ fontFamily: 'Caveat, cursive', fontSize: 15, color: '#aaa' }}>Loading…</div>
+            : (
+              <>
+                <p style={{ fontFamily: 'Caveat, cursive', fontSize: 17, lineHeight: 1.75, color: '#2a2a2a', whiteSpace: 'pre-wrap' }}>{summary}</p>
+                {openLabel && (
+                  <div style={{ marginTop: 14 }}>
+                    <button
+                      onClick={e => { e.stopPropagation(); onNavigate(node); }}
+                      style={{
+                        fontFamily: 'Caveat, cursive', fontSize: 15,
+                        background: accent, color: '#fff',
+                        border: '2px solid #1a1a1a', borderRadius: 2,
+                        padding: '5px 16px', cursor: 'pointer',
+                        boxShadow: '2px 2px 0 #1a1a1a',
+                        transition: 'transform 0.1s, box-shadow 0.1s',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.transform = 'translate(-1px,-1px)'; e.currentTarget.style.boxShadow = '3px 3px 0 #1a1a1a'; }}
+                      onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = '2px 2px 0 #1a1a1a'; }}
+                    >
+                      {openLabel} →
+                    </button>
+                  </div>
+                )}
+              </>
+            )
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── BREADCRUMB ────────────────────────────────────────────────────────────────
+function Breadcrumb({ node, treeData, onNavigate }) {
+  const path = useMemo(() => {
+    const found = [];
+    function search(nodes, target, current) {
+      for (const n of nodes) {
+        const next = [...current, n];
+        if (n.id === target.id) { found.push(...next); return true; }
+        if (n.children && search(n.children, target, next)) return true;
+      }
+      return false;
+    }
+    search(treeData, node, []);
+    return found;
+  }, [node, treeData]);
+
+  if (path.length <= 1) return null;
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+      {path.map((p, i) => (
+        <React.Fragment key={p.id}>
+          {i > 0 && <span style={{ fontFamily: 'Caveat, cursive', fontSize: 14, color: '#bbb' }}>›</span>}
+          {i < path.length - 1
+            ? <button onClick={() => onNavigate(p)} style={{
+                fontFamily: 'Caveat, cursive', fontSize: 15, color: '#666',
+                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                textDecoration: 'underline dotted #bbb',
+              }}>{p.label}</button>
+            : <span style={{ fontFamily: 'Caveat, cursive', fontSize: 15, fontWeight: 700, color: '#1a1a1a' }}>{p.label}</span>
+          }
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ── MAIN PANEL ────────────────────────────────────────────────────────────────
+function MainPanel({ node, treeData, onNavigate, accent }) {
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    setSummary(null);
+    setOverviewOpen(false);
+  }, [node.id]);
+
+  const handleOverviewToggle = async () => {
+    const next = !overviewOpen;
+    setOverviewOpen(next);
+    if (next && !summary) {
+      setLoading(true);
+      setSummary(node.summaryText || '');
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (panelRef.current) panelRef.current.scrollTop = 0;
+  }, [node.id]);
+
+  const depth = node.depth || 0;
+
+  return (
+    <div ref={panelRef} style={{ padding: '28px 40px 48px', overflowY: 'auto', overscrollBehavior: 'contain', height: '100%', minHeight: 0 }}>
+      <Breadcrumb node={node} treeData={treeData} onNavigate={onNavigate} />
+
+      {/* Title */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{
+          fontFamily: 'Special Elite, cursive',
+          fontSize: depth === 0 ? 30 : depth === 1 ? 26 : 22,
+          color: '#1a1a1a', lineHeight: 1.2, marginBottom: 4,
+        }}>
+          {node.label}{node.title ? `: ${node.title}` : ''}
+        </div>
+        {node.meta && (
+          <div style={{ fontFamily: 'Caveat, cursive', fontSize: 14, color: '#999', marginTop: 4 }}>
+            {node.meta}
+          </div>
+        )}
+        <div style={{ width: 50, height: 3, background: accent, marginTop: 10, borderRadius: 1 }} />
+      </div>
+
+      {/* Collapsible overview — hidden by default */}
+      {node.cacheKey && (
+        <div style={{ maxWidth: 720, marginBottom: 24 }}>
+          <button
+            onClick={handleOverviewToggle}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontFamily: 'Caveat, cursive', fontSize: 15, color: '#888',
+              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
+              userSelect: 'none',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"
+              style={{ transition: 'transform 0.18s', transform: overviewOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+              <polyline points="3,1 10,6.5 3,12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            {overviewOpen ? 'Hide overview' : 'Show overview'}
+          </button>
+
+          {overviewOpen && (
+            <div className="fade-in" style={{
+              background: '#fff9ee', border: '1.5px solid #d8d0c0', borderRadius: 3,
+              padding: '16px 20px', marginTop: 10,
+              boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.03)',
+            }}>
+              {loading
+                ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'Caveat, cursive', fontSize: 16, color: '#aaa' }}>
+                    <SpinnerIcon /> Loading…
+                  </div>
+                : <OverviewText text={summary} />
+              }
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Episode/part cards */}
+      {node.children && node.children.length > 0 && (
+        <div style={{ maxWidth: 720 }}>
+          <div style={{
+            fontFamily: 'Caveat, cursive', fontSize: 13, color: '#aaa',
+            letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14,
+          }}>
+            {depth === 0 ? '— Episodes —' : depth === 1 ? '— Parts —' : ''}
+          </div>
+          {node.children.map(child => (
+            <SummaryCard key={child.id} node={child} onNavigate={onNavigate} accent={accent} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ROOT APP ──────────────────────────────────────────────────────────────────
+function App() {
+  const { TweaksPanel, TweakSection, TweakColor, TweakRadio, useTweaks } = window;
+
+  const [tweaks, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
+    "accent": "#5c7a5c",
+    "sidebarWidth": 240,
+    "showSide": false
+  }/*EDITMODE-END*/);
+
+  const [treeData, setTreeData] = useState(null);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [expandedSet, setExpandedSet] = useState({});
+  const [loadError, setLoadError] = useState(null);
+
+  // Load normalized reader data on mount
+  useEffect(() => {
+    fetch('data/summaries.json')
+      .then(r => r.json())
+      .then(data => {
+        const tree = adaptReaderData(data);
+        setTreeData(tree);
+        setSelectedNode(tree[0]);
+        setExpandedSet(tree[0] ? { [tree[0].id]: true } : {});
+      })
+      .catch(e => setLoadError(e.message));
+  }, []);
+
+  const handleToggle = useCallback((id) => {
+    setExpandedSet(prev => ({ ...prev, [id]: !prev[id] }));
+  }, []);
+
+  const handleNavigate = useCallback((node) => {
+    setSelectedNode(node);
+    // Expand ancestors AND toggle the clicked node itself
+    setExpandedSet(prev => {
+      const next = { ...prev };
+      // Toggle the clicked node
+      next[node.id] = !prev[node.id];
+      // Also ensure all ancestors are expanded
+      function addParents(nodes, target, path) {
+        for (const n of nodes) {
+          const newPath = [...path, n.id];
+          if (n.id === target.id) { newPath.slice(0, -1).forEach(id => { next[id] = true; }); return true; }
+          if (n.children && addParents(n.children, target, newPath)) return true;
+        }
+        return false;
+      }
+      if (treeData) addParents(treeData, node, []);
+      return next;
+    });
+  }, [treeData]);
+
+  if (loadError) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'Caveat, cursive', fontSize: 20, color: '#c44' }}>
+      Failed to load summaries: {loadError}
+    </div>
+  );
+
+  if (!treeData) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 10, fontFamily: 'Caveat, cursive', fontSize: 20, color: '#888' }}>
+      <SpinnerIcon /> Loading…
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', minHeight: 0, overflow: 'hidden' }}>
+
+      {/* ── Sidebar ── */}
+      <div style={{
+        width: tweaks.sidebarWidth, minWidth: tweaks.sidebarWidth,
+        borderRight: '2px solid #1a1a1a', background: '#f0ece3',
+        display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', flexShrink: 0,
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: '16px 14px 12px', borderBottom: '2px solid #1a1a1a',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="12" height="12" rx="1" stroke="#1a1a1a" strokeWidth="1.5"/>
+            <line x1="6" y1="2" x2="6" y2="14" stroke="#1a1a1a" strokeWidth="1.5"/>
+            <line x1="8" y1="5" x2="12" y2="5" stroke="#1a1a1a" strokeWidth="1.2"/>
+            <line x1="8" y1="8" x2="12" y2="8" stroke="#1a1a1a" strokeWidth="1.2"/>
+          </svg>
+          <span style={{ fontFamily: 'Special Elite, cursive', fontSize: 15, letterSpacing: '0.03em' }}>Linkura</span>
+        </div>
+
+        {/* Tree */}
+        <div style={{ overflowY: 'auto', overscrollBehavior: 'contain', flex: 1, minHeight: 0, paddingTop: 6, paddingBottom: 16 }}>
+          {treeData.map(arc => (
+            <TreeNode key={arc.id} node={arc} depth={0}
+              selectedId={selectedNode?.id}
+              onSelect={handleNavigate}
+              expandedIds={expandedSet}
+              onToggle={handleToggle}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ── Main ── */}
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', background: '#f5f2ec', display: 'flex', flexDirection: 'column' }}>
+        {/* Topbar */}
+        <div style={{
+          height: 44, borderBottom: '1.5px solid #c8c0b0',
+          display: 'flex', alignItems: 'center',
+          padding: '0 40px', background: '#f0ece3', flexShrink: 0,
+        }}>
+          <span style={{ fontFamily: 'Caveat, cursive', fontSize: 14, color: '#999' }}>
+            Hasunosora Girls' High School — Story Summaries
+          </span>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          {selectedNode && (
+            <MainPanel
+              node={selectedNode}
+              treeData={treeData}
+              onNavigate={handleNavigate}
+              accent={tweaks.accent}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── Tweaks ── */}
+      <TweaksPanel>
+        <TweakSection label="Accent Color">
+          <TweakColor id="accent" label="Accent" value={tweaks.accent} onChange={v => setTweak('accent', v)} />
+        </TweakSection>
+        <TweakSection label="Sidebar Width">
+          <TweakRadio id="sidebarWidth" label="Width" value={tweaks.sidebarWidth}
+            options={[{ label: 'Narrow', value: 200 }, { label: 'Medium', value: 240 }, { label: 'Wide', value: 300 }]}
+            onChange={v => setTweak('sidebarWidth', Number(v))}
+          />
+        </TweakSection>
+      </TweaksPanel>
+
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
