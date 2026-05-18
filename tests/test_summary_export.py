@@ -13,9 +13,16 @@ def _summary(*, label: str = "Part") -> str:
     list_label = "Key Events" if label == "Part" else "Episode Arc"
     if label == "Year":
         list_label = "Episode Index"
+    part_index = ""
+    if label == "Episode":
+        part_index = """
+Part Index:
+- Part 1: First indexed part.
+"""
     return f"""Overview:
 {label} overview.
 
+{part_index}
 {list_label}:
 - First item.
 
@@ -103,6 +110,13 @@ def test_build_summary_reader_data_parses_sections_and_orders_tree(tmp_path: Pat
     assert part_summary["sections"]["Overview"] == "Part overview."
     assert part_summary["importantTerms"] == ["Kaho Hinoshita", "Hasunosora"]
     assert part_summary["meta"]["models"]["chat"] == "chat"
+    episode_summary = data["summaries"]["EPISODE|103|Main|Episode A"]
+    assert episode_summary["sectionOrder"][:3] == [
+        "Overview",
+        "Part Index",
+        "Episode Arc",
+    ]
+    assert episode_summary["sections"]["Part Index"] == "- Part 1: First indexed part."
     assert any(
         record["summaryId"] == "103|Main|Episode A|A" and "kaho hinoshita" in record["text"]
         for record in data["search"]
