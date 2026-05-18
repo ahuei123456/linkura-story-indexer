@@ -14,7 +14,7 @@ from .manifest import (
     stable_hash,
 )
 
-SUMMARIZATION_PROMPT_VERSION = "2"
+SUMMARIZATION_PROMPT_VERSION = "3"
 
 PART_SUMMARY_SECTIONS = (
     "Overview",
@@ -25,6 +25,7 @@ PART_SUMMARY_SECTIONS = (
 )
 EPISODE_SUMMARY_SECTIONS = (
     "Overview",
+    "Part Index",
     "Episode Arc",
     "Character Developments",
     "Relationship / Unit Developments",
@@ -157,6 +158,11 @@ Important Terms:
 Overview:
 [A detailed prose recap of the whole episode. Preserve the current useful length. Focus on the episode's central conflict, progression, turning points, and resolution. Do not compress into a short abstract.]
 
+Part Index:
+- Part 1: central part event, conflict, or outcome in one line.
+- Part 2: central part event, conflict, or outcome in one line.
+- Interlude: brief recap of the interlude beat in one line.
+
 Episode Arc:
 - Setup: ...
 - Escalation: ...
@@ -176,7 +182,12 @@ Continuity Facts:
 - Promises, conflicts, decisions, outcomes, new goals, event results.
 
 Important Terms:
-- Characters, units, songs, events, locations, apps, competitions, aliases central to this episode."""
+- Characters, units, songs, events, locations, apps, competitions, aliases central to this episode.
+
+Episode Part Index label rules:
+- Use `Part N:` for numbered parts.
+- Use stable English labels for non-numbered parts or interludes, such as `Interlude:` or `Ending:`.
+- Do not use raw Japanese part titles as Part Index bullet labels when a generic label is available."""
 
     if level_name == "Year":
         return """Required Year summary format:
@@ -185,8 +196,8 @@ Overview:
 [A detailed prose summary of the year's overall narrative movement, club status changes, competitions, graduations/transitions, and recurring themes. Keep episode boundaries clear; do not force unrelated episodes into larger arcs.]
 
 Episode Index:
-- Episode Name: central conflict and outcome in one line, about 20-30 words.
-- Episode Name: central conflict and outcome in one line, about 20-30 words.
+- Episode 1: central conflict and outcome in one line, about 20-30 words.
+- Episode 2: central conflict and outcome in one line, about 20-30 words.
 
 Character Trajectories:
 - Character Name: year-long growth, setbacks, role changes, relationships, goals.
@@ -199,7 +210,13 @@ Continuity Facts:
 - Year-level or cross-episode facts only: final states, competition results, graduations/transitions, promises, unresolved threads, and rare genuine multi-episode arcs.
 
 Important Terms:
-- Up to 15 major recurring or year-routing terms."""
+- Up to 15 major recurring or year-routing terms.
+
+Year Episode Index label rules:
+- Use `Episode N:` for numbered main episodes.
+- Use stable English labels for non-numbered special entries, such as `Interlude:` or `Special:`.
+- Do not use raw Japanese episode titles as Episode Index bullet labels.
+- Japanese or official episode titles and aliases may still be preserved in prose or Important Terms when retrieval-useful."""
 
     raise ValueError(f"Unsupported summary level: {level_name}")
 

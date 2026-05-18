@@ -231,6 +231,53 @@ def test_summary_prompt_includes_required_tier_sections(
     assert "Do not use Markdown headings, bold text, numbered lists, tables, or extra sections." in prompt
 
 
+def test_summarization_prompt_version_is_current() -> None:
+    assert SUMMARIZATION_PROMPT_VERSION == "3"
+
+
+def test_episode_prompt_requires_part_index_with_stable_labels() -> None:
+    _, prompt = HierarchicalSummarizer()._build_summary_prompt(
+        "part summaries",
+        level_name="Episode",
+    )
+
+    assert EPISODE_SUMMARY_SECTIONS == (
+        "Overview",
+        "Part Index",
+        "Episode Arc",
+        "Character Developments",
+        "Relationship / Unit Developments",
+        "Continuity Facts",
+        "Important Terms",
+    )
+    assert prompt.index("Overview:") < prompt.index("Part Index:")
+    assert prompt.index("Part Index:") < prompt.index("Episode Arc:")
+    assert "- Part 1:" in prompt
+    assert "- Part 2:" in prompt
+    assert "Use `Part N:` for numbered parts." in prompt
+    assert "Use stable English labels for non-numbered parts or interludes" in prompt
+    assert "such as `Interlude:` or `Ending:`" in prompt
+    assert "Do not use raw Japanese part titles as Part Index bullet labels" in prompt
+    assert "when a generic label is available." in prompt
+
+
+def test_year_prompt_requires_stable_episode_index_labels() -> None:
+    _, prompt = HierarchicalSummarizer()._build_summary_prompt(
+        "episode summaries",
+        level_name="Year",
+    )
+
+    assert "- Episode 1:" in prompt
+    assert "- Episode 2:" in prompt
+    assert "Use `Episode N:` for numbered main episodes." in prompt
+    assert "Use stable English labels for non-numbered special entries" in prompt
+    assert "Do not use raw Japanese episode titles as Episode Index bullet labels." in prompt
+    assert (
+        "Japanese or official episode titles and aliases may still be preserved in prose "
+        "or Important Terms when retrieval-useful."
+    ) in prompt
+
+
 @pytest.mark.parametrize(
     ("level_name", "input_phrase"),
     [

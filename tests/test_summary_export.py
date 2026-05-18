@@ -9,13 +9,20 @@ from linkura_story_indexer.summary_export import (
 )
 
 
-def _summary(*, label: str = "Part") -> str:
+def _summary(*, label: str = "Part", include_part_index: bool = True) -> str:
     list_label = "Key Events" if label == "Part" else "Episode Arc"
     if label == "Year":
         list_label = "Episode Index"
+    part_index = ""
+    if label == "Episode" and include_part_index:
+        part_index = """
+Part Index:
+- Part 1: First indexed part.
+"""
     return f"""Overview:
 {label} overview.
 
+{part_index}
 {list_label}:
 - First item.
 
@@ -103,10 +110,42 @@ def test_build_summary_reader_data_parses_sections_and_orders_tree(tmp_path: Pat
     assert part_summary["sections"]["Overview"] == "Part overview."
     assert part_summary["importantTerms"] == ["Kaho Hinoshita", "Hasunosora"]
     assert part_summary["meta"]["models"]["chat"] == "chat"
+    episode_summary = data["summaries"]["EPISODE|103|Main|Episode A"]
+    assert episode_summary["sectionOrder"][:3] == [
+        "Overview",
+        "Part Index",
+        "Episode Arc",
+    ]
+    assert episode_summary["sections"]["Part Index"] == "- Part 1: First indexed part."
     assert any(
         record["summaryId"] == "103|Main|Episode A|A" and "kaho hinoshita" in record["text"]
         for record in data["search"]
     )
+
+
+def test_build_summary_reader_data_tolerates_legacy_episode_without_part_index(
+    tmp_path: Path,
+) -> None:
+    story_order = load_story_order(_story_order(tmp_path))
+    cache = {
+        "EPISODE|103|Main|Episode A": {
+            "schema_version": "1",
+            "fingerprint": "episode",
+            "summary": _summary(label="Episode", include_part_index=False),
+            "inputs": {"level": "episode"},
+        },
+    }
+
+    data = build_summary_reader_data(cache, story_order=story_order)
+    episode_summary = data["summaries"]["EPISODE|103|Main|Episode A"]
+
+    assert episode_summary["sectionOrder"] == [
+        "Overview",
+        "Episode Arc",
+        "Continuity Facts",
+        "Important Terms",
+    ]
+    assert "Part Index" not in episode_summary["sections"]
 
 
 def test_export_summary_reader_writes_static_site(tmp_path: Path) -> None:
