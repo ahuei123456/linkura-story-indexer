@@ -161,7 +161,7 @@ Overview:
 Part Index:
 - Part 1: central part event, conflict, or outcome in one line.
 - Part 2: central part event, conflict, or outcome in one line.
-- Interlude: stable English label for a non-numbered interlude, special, ending, or other non-numbered part.
+- Interlude: brief recap of the interlude beat in one line.
 
 Episode Arc:
 - Setup: ...
