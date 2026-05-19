@@ -31,6 +31,12 @@ def test_query_analysis_extracts_arc_constraint() -> None:
     assert analysis.intent_bucket == SUMMARY_INTENT
 
 
+def test_query_analysis_extracts_ordinal_arc_constraint() -> None:
+    analysis = analyze_query("What happened at the end of the 105th term?")
+
+    assert analysis.arc_ids == ("105",)
+
+
 def test_query_analysis_extracts_part_scene_constraint_as_zero_based() -> None:
     analysis = analyze_query("What happens in ABYSS scene 2?")
 

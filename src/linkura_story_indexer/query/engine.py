@@ -98,7 +98,15 @@ class StoryQueryEngine:
         if not self.state_ledger:
             return set()
         ledger_arc_ids = self._state_ledger_available_arc_ids()
-        return {arc_id for arc_id in re.findall(r"\b\d{3}\b", question) if arc_id in ledger_arc_ids}
+        return {
+            match.group("arc")
+            for match in re.finditer(
+                r"\b(?P<arc>\d{3})(?:st|nd|rd|th)?\b",
+                question,
+                re.IGNORECASE,
+            )
+            if match.group("arc") in ledger_arc_ids
+        }
 
     def _state_ledger_arc_ids(self, question: str, retrieved_arc_ids: set[str]) -> set[str]:
         explicit_arc_ids = self._question_arc_ids(question)
@@ -1180,37 +1188,27 @@ class StoryQueryEngine:
         ]
 
     def query(self, question: str) -> str:
-        """Executes the Hierarchical RAG query flow."""
-        safe_print("Searching vector index by summary tiers and raw evidence...")
+        """Executes the raw-first RAG query flow."""
+        safe_print("Searching raw source evidence...")
         analysis = analyze_query(question, self.glossary)
         structured_answer = self._structured_answer(question, analysis)
         if structured_answer is not None:
             return structured_answer
         expanded_question = self._expanded_question(question)
         query_embedding = self._query_embedding(expanded_question)
-        retrieved_nodes = self._tiered_retrieve(
+        retrieved_nodes = self._raw_only_retrieve(
             expanded_question,
             query_embedding=query_embedding,
             analysis=analysis,
         )
 
         if not retrieved_nodes:
-            safe_print("Tiered retrieval returned no hits.")
+            safe_print("Raw evidence retrieval returned no hits.")
 
-        direct_raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
-        raw_ranked_lists = [direct_raw_nodes] if direct_raw_nodes else []
-        if retrieved_nodes:
-            safe_print("Expanding summary hits to child raw scenes...")
-            child_raw_nodes = self._expand_summaries_to_raw_scenes(
-                expanded_question,
-                retrieved_nodes,
-                query_embedding=query_embedding,
-                analysis=analysis,
-            )
-            if child_raw_nodes:
-                raw_ranked_lists.append(child_raw_nodes)
-
-        raw_nodes = self._filter_raw_nodes_by_analysis(self._rrf_fuse(raw_ranked_lists), analysis)
+        raw_nodes = self._filter_raw_nodes_by_analysis(
+            self._raw_evidence_nodes(retrieved_nodes),
+            analysis,
+        )
 
         if not raw_nodes:
             return INSUFFICIENT_SOURCE_CONTEXT
@@ -1243,4 +1241,4 @@ class StoryQueryEngine:
             return INSUFFICIENT_SOURCE_CONTEXT
 
         safe_print("Building answer context from raw source scenes...")
-        return self._answer_from_raw_evidence(question, final_raw_nodes)
+        return self._answer_from_raw_evidence(question, final_raw_nodes, analysis)

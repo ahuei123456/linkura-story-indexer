@@ -49,7 +49,7 @@ class QueryAnalysis:
         )
 
 
-_ARC_RE = re.compile(r"\b\d{3}\b")
+_ARC_RE = re.compile(r"\b(?P<arc>\d{3})(?:st|nd|rd|th)?\b", re.IGNORECASE)
 _EPISODE_RE = re.compile(r"(?:episode|ep\.?|第)\s*(\d+)", re.IGNORECASE)
 _TEMPORAL_EPISODE_RE = re.compile(
     r"\b(?P<operator>before|prior to|as of|until|through|after|since)\s+"
@@ -58,7 +58,7 @@ _TEMPORAL_EPISODE_RE = re.compile(
 )
 _TEMPORAL_ARC_RE = re.compile(
     r"\b(?P<operator>before|prior to|as of|until|through|after|since)\s+"
-    r"(?:year|arc)?\s*(?P<arc>\d{3})\b",
+    r"(?:year|arc)?\s*(?P<arc>\d{3})(?:st|nd|rd|th)?\b",
     re.IGNORECASE,
 )
 _SCENE_RE = re.compile(
@@ -87,7 +87,9 @@ def analyze_query(
     character_names = _extract_character_names(question, glossary)
 
     return QueryAnalysis(
-        arc_ids=tuple(_ordered_unique(_ARC_RE.findall(question))),
+        arc_ids=tuple(
+            _ordered_unique([match.group("arc") for match in _ARC_RE.finditer(question)])
+        ),
         story_type=story_type,
         episode_number=episode_number,
         part_name=part_name,
