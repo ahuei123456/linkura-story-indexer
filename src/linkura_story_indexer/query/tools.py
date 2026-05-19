@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
@@ -8,10 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import FunctionToolset
 
 from linkura_story_indexer.eval.models import SourceIdentity, StageTrace
+from linkura_story_indexer.lexical import glossary_aliases_for
 from linkura_story_indexer.query.engine import Node, StoryQueryEngine
-
-_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff々〆〤ー]+")
-_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'_-]*")
 
 
 class SearchRawInput(BaseModel):
@@ -240,29 +237,6 @@ def get_scene(engine: StoryQueryEngine, args: GetSceneInput) -> ToolResult:
     return ToolResult(candidates=[candidate])
 
 
-def _ordered_unique(values: list[str]) -> list[str]:
-    unique = []
-    seen = set()
-    for value in values:
-        cleaned = value.strip()
-        if not cleaned or cleaned in seen:
-            continue
-        unique.append(cleaned)
-        seen.add(cleaned)
-    return unique
-
-
-def _glossary_aliases(canonical_term: str, translation: str) -> list[str]:
-    aliases = [canonical_term, translation]
-    aliases.extend(part for part in _WORD_RE.findall(translation) if len(part) >= 2)
-    if _CJK_RE.fullmatch(canonical_term):
-        if len(canonical_term) >= 4:
-            aliases.append(canonical_term[-2:])
-        if len(canonical_term) >= 5:
-            aliases.append(canonical_term[-3:])
-    return _ordered_unique(aliases)
-
-
 def lookup_glossary(engine: StoryQueryEngine, args: LookupGlossaryInput) -> GlossaryLookupResult:
     glossary = getattr(engine, "glossary", None)
     if not glossary:
@@ -275,7 +249,7 @@ def lookup_glossary(engine: StoryQueryEngine, args: LookupGlossaryInput) -> Glos
         for canonical_term, translation in terms.items():
             canonical = str(canonical_term)
             translated = str(translation)
-            aliases = _glossary_aliases(canonical, translated)
+            aliases = glossary_aliases_for(canonical, translated)
             if args.term == canonical:
                 match_type: Literal["canonical", "translation", "alias"] = "canonical"
             elif normalized_term == translated.casefold():

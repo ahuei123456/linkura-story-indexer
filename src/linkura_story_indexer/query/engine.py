@@ -1468,6 +1468,11 @@ class StoryQueryEngine:
         analysis: QueryAnalysis | None = None,
     ) -> RetrievalTraceResult:
         """Executes the deterministic raw retrieval pipeline and returns final nodes plus stages."""
+        if top_k is not None and top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if n_results is not None and n_results < 1:
+            raise ValueError("n_results must be at least 1")
+
         expanded_question = self._expanded_question(question)
         query_embedding = None
         dense_unavailable_reason = None
@@ -1485,7 +1490,9 @@ class StoryQueryEngine:
             )
         retrieved_nodes, stages = self._hybrid_retrieve_trace(
             expanded_question,
-            n_results=n_results or self._config().raw_candidate_count,
+            n_results=(
+                n_results if n_results is not None else self._config().raw_candidate_count
+            ),
             where=raw_where,
             query_embedding=query_embedding,
             dense_unavailable_reason=dense_unavailable_reason,
@@ -1589,7 +1596,7 @@ class StoryQueryEngine:
             ],
         )
 
-        final_top_k = top_k or self._config().final_top_k
+        final_top_k = top_k if top_k is not None else self._config().final_top_k
         if analysis is not None:
             final_raw_nodes = self._filter_raw_nodes_by_analysis(deterministic_nodes, analysis)[
                 :final_top_k
@@ -1619,6 +1626,9 @@ class StoryQueryEngine:
         top_k: int,
     ) -> RetrievalTraceResult:
         """Executes hybrid retrieval for summary tiers and returns nodes plus trace stages."""
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+
         expanded_question = self._expanded_question(question)
         query_embedding = None
         dense_unavailable_reason = None

@@ -171,6 +171,35 @@ def test_retrieval_config_rejects_invalid_rrf_k():
         raise AssertionError("RetrievalConfig accepted an invalid RRF k")
 
 
+def test_retrieve_raw_nodes_with_trace_rejects_invalid_limits():
+    engine = make_engine()
+
+    try:
+        engine.retrieve_raw_nodes_with_trace("question", top_k=0)
+    except ValueError as exc:
+        assert "top_k must be at least 1" in str(exc)
+    else:
+        raise AssertionError("accepted invalid raw retrieval top_k")
+
+    try:
+        engine.retrieve_raw_nodes_with_trace("question", n_results=0)
+    except ValueError as exc:
+        assert "n_results must be at least 1" in str(exc)
+    else:
+        raise AssertionError("accepted invalid raw retrieval n_results")
+
+
+def test_retrieve_summary_nodes_with_trace_rejects_invalid_top_k():
+    engine = make_engine()
+
+    try:
+        engine.retrieve_summary_nodes_with_trace("question", where={"summary_level": 1}, top_k=0)
+    except ValueError as exc:
+        assert "top_k must be at least 1" in str(exc)
+    else:
+        raise AssertionError("accepted invalid summary retrieval top_k")
+
+
 def test_rrf_fusion_combines_fixed_ranked_lists():
     engine = make_engine()
     a = raw_node("a", scene_start=0)
