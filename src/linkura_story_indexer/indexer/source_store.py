@@ -337,6 +337,35 @@ class SourceRecordStore:
             ),
         )
 
+    def get_scene(self, file_path: str, scene_index: int) -> dict[str, Any] | None:
+        """Returns one persisted raw scene by source file and zero-based scene index."""
+        if scene_index < 0:
+            return None
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT scene_id, file_path, parent_part_id, scene_index, text, metadata_json
+                FROM source_scenes
+                WHERE file_path = ?
+                  AND scene_index = ?
+                """,
+                (file_path, scene_index),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        metadata = json.loads(str(row["metadata_json"]))
+        return {
+            "scene_id": row["scene_id"],
+            "file_path": row["file_path"],
+            "parent_part_id": row["parent_part_id"],
+            "scene_index": row["scene_index"],
+            "text": row["text"],
+            "metadata": metadata if isinstance(metadata, dict) else {},
+        }
+
     def cached_state_facts(
         self,
         *,
