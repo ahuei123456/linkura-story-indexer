@@ -76,6 +76,12 @@ class RetrievalConfig:
 DEFAULT_RETRIEVAL_CONFIG = RetrievalConfig()
 
 
+@dataclass(frozen=True)
+class RetrievalTraceResult:
+    nodes: list[Node]
+    stages: dict[StageName, StageTrace]
+
+
 class StoryQueryEngine:
     def __init__(
         self,
@@ -1452,18 +1458,20 @@ class StoryQueryEngine:
             if (order := self._story_order(node[1])) is not None and order < boundary_order
         ]
 
-    def retrieve_with_trace(
+    def retrieve_raw_nodes_with_trace(
         self,
         question: str,
         *,
-        query_id: str = "ad-hoc",
-        mode: EvalMode = "raw",
-        answer_mode: bool = False,
-    ) -> QueryTrace:
-        """Executes the raw-first retrieval flow and returns deterministic stage traces."""
-        analysis = None
-        if mode == "raw-analyze" or self._config().enable_query_analysis:
-            analysis = analyze_query(question, self.glossary)
+        where: dict[str, Any] | None = None,
+        top_k: int | None = None,
+        n_results: int | None = None,
+        analysis: QueryAnalysis | None = None,
+    ) -> RetrievalTraceResult:
+        """Executes the deterministic raw retrieval pipeline and returns final nodes plus stages."""
+        if top_k is not None and top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if n_results is not None and n_results < 1:
+            raise ValueError("n_results must be at least 1")
 
         expanded_question = self._expanded_question(question)
         query_embedding = None
@@ -1473,14 +1481,18 @@ class StoryQueryEngine:
         except Exception as exc:
             dense_unavailable_reason = f"query embedding unavailable: {exc}"
 
-        raw_where = self._where_for_analysis(
-            analysis,
-            summary_level=4,
-            include_scene_constraint=True,
-        )
+        raw_where = where
+        if raw_where is None:
+            raw_where = self._where_for_analysis(
+                analysis,
+                summary_level=4,
+                include_scene_constraint=True,
+            )
         retrieved_nodes, stages = self._hybrid_retrieve_trace(
             expanded_question,
-            n_results=self._config().raw_candidate_count,
+            n_results=(
+                n_results if n_results is not None else self._config().raw_candidate_count
+            ),
             where=raw_where,
             query_embedding=query_embedding,
             dense_unavailable_reason=dense_unavailable_reason,
@@ -1584,12 +1596,13 @@ class StoryQueryEngine:
             ],
         )
 
+        final_top_k = top_k if top_k is not None else self._config().final_top_k
         if analysis is not None:
             final_raw_nodes = self._filter_raw_nodes_by_analysis(deterministic_nodes, analysis)[
-                : self._config().final_top_k
+                :final_top_k
             ]
         else:
-            final_raw_nodes = deterministic_nodes[: self._config().final_top_k]
+            final_raw_nodes = deterministic_nodes[:final_top_k]
         stages["final_top_k"] = self._trace_stage(
             "final_top_k",
             [
@@ -1603,6 +1616,51 @@ class StoryQueryEngine:
             "reranker stage unavailable; #23 has not landed",
         )
 
+        return RetrievalTraceResult(nodes=final_raw_nodes, stages=stages)
+
+    def retrieve_summary_nodes_with_trace(
+        self,
+        question: str,
+        *,
+        where: dict[str, Any] | None,
+        top_k: int,
+    ) -> RetrievalTraceResult:
+        """Executes hybrid retrieval for summary tiers and returns nodes plus trace stages."""
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+
+        expanded_question = self._expanded_question(question)
+        query_embedding = None
+        dense_unavailable_reason = None
+        try:
+            query_embedding = self._query_embedding(expanded_question)
+        except Exception as exc:
+            dense_unavailable_reason = f"query embedding unavailable: {exc}"
+
+        summary_nodes, stages = self._hybrid_retrieve_trace(
+            expanded_question,
+            n_results=top_k,
+            where=where,
+            query_embedding=query_embedding,
+            dense_unavailable_reason=dense_unavailable_reason,
+        )
+        return RetrievalTraceResult(nodes=summary_nodes, stages=stages)
+
+    def retrieve_with_trace(
+        self,
+        question: str,
+        *,
+        query_id: str = "ad-hoc",
+        mode: EvalMode = "raw",
+        answer_mode: bool = False,
+    ) -> QueryTrace:
+        """Executes the raw-first retrieval flow and returns deterministic stage traces."""
+        analysis = None
+        if mode == "raw-analyze" or self._config().enable_query_analysis:
+            analysis = analyze_query(question, self.glossary)
+        retrieval = self.retrieve_raw_nodes_with_trace(question, analysis=analysis)
+        final_raw_nodes = retrieval.nodes
+
         answer_text = None
         if answer_mode and final_raw_nodes:
             answer_text = self._answer_from_raw_evidence(question, final_raw_nodes, analysis)
@@ -1612,7 +1670,7 @@ class StoryQueryEngine:
             question=question,
             mode=mode,
             config=self._config().__dict__,
-            stages=stages,
+            stages=retrieval.stages,
             final_citation_labels=[
                 self._citation_label(metadata) for _, metadata in final_raw_nodes
             ],

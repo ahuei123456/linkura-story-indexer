@@ -43,6 +43,13 @@ def _japanese_short_aliases(value: str) -> list[str]:
     return aliases
 
 
+def glossary_aliases_for(japanese: str, english: str) -> list[str]:
+    aliases = [japanese, english]
+    aliases.extend(_english_alias_parts(english))
+    aliases.extend(_japanese_short_aliases(japanese))
+    return _ordered_unique(aliases)
+
+
 def glossary_alias_groups(glossary: dict[str, dict[str, str]] | None) -> list[list[str]]:
     if not glossary:
         return []
@@ -52,10 +59,7 @@ def glossary_alias_groups(glossary: dict[str, dict[str, str]] | None) -> list[li
         if not isinstance(terms, dict):
             continue
         for japanese, english in terms.items():
-            aliases = [japanese, english]
-            aliases.extend(_english_alias_parts(english))
-            aliases.extend(_japanese_short_aliases(japanese))
-            groups.append(_ordered_unique(aliases))
+            groups.append(glossary_aliases_for(japanese, english))
     return groups
 
 

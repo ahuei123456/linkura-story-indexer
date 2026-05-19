@@ -2,7 +2,12 @@ from pathlib import Path
 from typing import Any
 
 from linkura_story_indexer import cli
-from linkura_story_indexer.lexical import LexicalIndex, expand_query_with_glossary
+from linkura_story_indexer.lexical import (
+    LexicalIndex,
+    expand_query_with_glossary,
+    glossary_alias_groups,
+    glossary_aliases_for,
+)
 from linkura_story_indexer.models.story import StoryMetadata, StoryNode
 
 
@@ -36,6 +41,15 @@ def test_glossary_expansion_adds_full_and_short_aliases() -> None:
     assert "Kaho Hinoshita" in expanded
     assert "日野下花帆" in expanded
     assert "花帆" in expanded
+
+
+def test_glossary_alias_groups_uses_single_entry_alias_helper() -> None:
+    aliases = glossary_aliases_for("日野下花帆", "Kaho Hinoshita")
+
+    assert aliases == ["日野下花帆", "Kaho Hinoshita", "Kaho", "Hinoshita", "花帆", "下花帆"]
+    assert glossary_alias_groups({"characters": {"日野下花帆": "Kaho Hinoshita"}}) == [
+        aliases
+    ]
 
 
 def test_lexical_index_finds_short_japanese_name_and_preserves_span(tmp_path: Path) -> None:

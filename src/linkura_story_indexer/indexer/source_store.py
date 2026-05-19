@@ -31,6 +31,20 @@ def _metadata_order(metadata: dict[str, Any]) -> int:
     return int(order) if isinstance(order, int) else 0
 
 
+def _row_to_scene(row: sqlite3.Row) -> dict[str, Any]:
+    metadata = json.loads(str(row["metadata_json"]))
+    if not isinstance(metadata, dict):
+        raise ValueError("source scene metadata_json must decode to an object")
+    return {
+        "scene_id": row["scene_id"],
+        "file_path": row["file_path"],
+        "parent_part_id": row["parent_part_id"],
+        "scene_index": row["scene_index"],
+        "text": row["text"],
+        "metadata": metadata,
+    }
+
+
 def _turn_speaker_tokens(turn: DialogueTurn) -> tuple[list[str], str]:
     if turn.speaker_tokens:
         return turn.speaker_tokens, turn.speaker_kind or SPEAKER_KIND_NAMED
@@ -315,19 +329,7 @@ class SourceRecordStore:
                 """
             ).fetchall()
 
-        scenes = []
-        for row in rows:
-            metadata = json.loads(str(row["metadata_json"]))
-            scenes.append(
-                {
-                    "scene_id": row["scene_id"],
-                    "file_path": row["file_path"],
-                    "parent_part_id": row["parent_part_id"],
-                    "scene_index": row["scene_index"],
-                    "text": row["text"],
-                    "metadata": metadata,
-                }
-            )
+        scenes = [_row_to_scene(row) for row in rows]
         return sorted(
             scenes,
             key=lambda scene: (
@@ -336,6 +338,27 @@ class SourceRecordStore:
                 int(scene["scene_index"]),
             ),
         )
+
+    def get_scene(self, file_path: str, scene_index: int) -> dict[str, Any] | None:
+        """Returns one persisted raw scene by source file and zero-based scene index."""
+        if scene_index < 0:
+            return None
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT scene_id, file_path, parent_part_id, scene_index, text, metadata_json
+                FROM source_scenes
+                WHERE file_path = ?
+                  AND scene_index = ?
+                """,
+                (file_path, scene_index),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return _row_to_scene(row)
 
     def cached_state_facts(
         self,
