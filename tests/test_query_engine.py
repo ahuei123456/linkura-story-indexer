@@ -831,6 +831,81 @@ def test_rank_raw_candidates_prefers_exact_and_speaker_matches():
     assert ranked[0] == exact_match
 
 
+def test_retrieve_with_trace_records_neighbor_provenance(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=1, final_top_k=5)
+    seed = raw_node("seed scene", scene_start=5)
+    before = raw_node("neighbor before", scene_start=4)
+    after = raw_node("neighbor after", scene_start=6)
+
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+    monkeypatch.setattr(
+        engine,
+        "_hybrid_retrieve_trace",
+        lambda question, **kwargs: (
+            [seed],
+            {
+                "dense_raw": query_engine.StageTrace(name="dense_raw", candidates=[]),
+                "lexical_raw": query_engine.StageTrace(name="lexical_raw", candidates=[]),
+                "rrf_fusion": query_engine.StageTrace(name="rrf_fusion", candidates=[]),
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_raw_nodes_for_part",
+        lambda question, metadata, **kwargs: [before, seed, after],
+    )
+
+    trace = engine.retrieve_with_trace("What happens nearby?", query_id="q-neighbor")
+    neighbor_stage = trace.stages["neighbor_expansion"]
+
+    assert neighbor_stage.candidates is not None
+    provenance = {
+        (candidate.source_span.scene_start if candidate.source_span else -1): (
+            candidate.provenance,
+            candidate.provenance_node_id,
+        )
+        for candidate in neighbor_stage.candidates
+    }
+    assert provenance[5] == ("direct_hit", None)
+    assert provenance[4][0] == "neighbor_of"
+    assert provenance[6][0] == "neighbor_of"
+
+
+def test_retrieve_with_trace_exposes_deterministic_ranking_components(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(neighbor_scene_window=0, final_top_k=5)
+    weak_seed = raw_node("unrelated direct candidate", scene_start=0)
+    exact_match = raw_node("花帆 talks about practice", scene_start=1, detected_speakers="花帆")
+
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+    monkeypatch.setattr(
+        engine,
+        "_hybrid_retrieve_trace",
+        lambda question, **kwargs: (
+            [weak_seed, exact_match],
+            {
+                "dense_raw": query_engine.StageTrace(name="dense_raw", candidates=[]),
+                "lexical_raw": query_engine.StageTrace(name="lexical_raw", candidates=[]),
+                "rrf_fusion": query_engine.StageTrace(name="rrf_fusion", candidates=[]),
+            },
+        ),
+    )
+
+    trace = engine.retrieve_with_trace(
+        "What does 花帆 say?",
+        query_id="q-ranking",
+    )
+    ranking_stage = trace.stages["deterministic_ranking"]
+
+    assert ranking_stage.candidates is not None
+    assert ranking_stage.candidates[0].text == "花帆 talks about practice"
+    assert ranking_stage.candidates[0].scores.deterministic_score is not None
+    assert ranking_stage.candidates[0].signal_breakdown["matched_terms"] >= 1
+    assert ranking_stage.candidates[0].signal_breakdown["speaker_matches"] == 1
+
+
 def test_analysis_where_can_filter_raw_chunks_by_source_store_speaker() -> None:
     engine = make_engine()
 

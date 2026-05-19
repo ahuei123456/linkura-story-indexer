@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -20,6 +20,10 @@ from .database import (
     initialize_ingest_settings,
     initialize_settings,
 )
+from .eval.io import load_eval_run, stable_json
+from .eval.metrics import diff_runs
+from .eval.models import EvalMode
+from .eval.runner import run_eval_from_file
 from .glossary_candidates import (
     DEFAULT_GLOSSARY_CANDIDATE_FILE,
     category_counts,
@@ -61,6 +65,8 @@ from .summary_export import (
 )
 
 app = typer.Typer()
+eval_app = typer.Typer(help="Run and compare retrieval evaluation harness outputs.")
+app.add_typer(eval_app, name="eval")
 console = Console()
 
 
@@ -398,6 +404,85 @@ def extract_glossary_candidates_command(
     console.print(f"Wrote {len(candidates)} glossary candidates to {output_file}.")
     if count_summary:
         console.print(f"By category: {count_summary}")
+
+
+def _eval_mode(value: str) -> EvalMode:
+    if value not in {"raw", "raw-analyze", "raw-rerank"}:
+        raise typer.BadParameter("mode must be one of: raw, raw-analyze, raw-rerank")
+    return cast(EvalMode, value)
+
+
+@eval_app.command("run")
+def eval_run_command(
+    golden_set: str = typer.Option(
+        "eval/golden_questions.json",
+        "--golden-set",
+        help="Path to the golden question set JSON.",
+    ),
+    mode: str = typer.Option(
+        "raw",
+        "--mode",
+        help="Evaluation mode: raw, raw-analyze, or raw-rerank.",
+    ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        help="Path to write the complete eval run JSON.",
+    ),
+    inspect_query_id: str | None = typer.Option(
+        None,
+        "--inspect",
+        help="Print the full deterministic trace for one query id.",
+    ),
+    dump_traces_dir: str | None = typer.Option(
+        None,
+        "--dump-traces",
+        help="Directory to write one deterministic JSON trace per query.",
+    ),
+    answer_mode: bool = typer.Option(
+        False,
+        "--answer-mode/--retrieval-only",
+        help="Also synthesize answers and evaluate answer text when credentials are configured.",
+    ),
+):
+    """Runs the retrieval evaluation harness."""
+    try:
+        run = run_eval_from_file(
+            golden_set,
+            mode=_eval_mode(mode),
+            output_path=output,
+            inspect_query_id=inspect_query_id,
+            dump_traces_dir=dump_traces_dir,
+            answer_mode=answer_mode,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    if inspect_query_id is not None:
+        trace = next(trace for trace in run.traces if trace.query_id == inspect_query_id)
+        console.print(stable_json(trace))
+        return
+
+    console.print(stable_json(run.aggregate_metrics))
+    if output is not None:
+        console.print(f"[bold green]Wrote eval run to {output}[/bold green]")
+    if dump_traces_dir is not None:
+        console.print(f"[bold green]Wrote query traces to {dump_traces_dir}[/bold green]")
+
+
+@eval_app.command("diff")
+def eval_diff_command(
+    run_a: str = typer.Argument(..., help="Baseline eval run JSON."),
+    run_b: str = typer.Argument(..., help="Comparison eval run JSON."),
+):
+    """Diffs two retrieval evaluation run files."""
+    try:
+        diff = diff_runs(load_eval_run(run_a), load_eval_run(run_b))
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(stable_json(diff))
 
 @app.command("export-summary-reader")
 def export_summary_reader_command(

@@ -1,0 +1,456 @@
+{
+  "schema_version": "1",
+  "questions": [
+    {
+      "id": "q001_izumi_acting_past",
+      "question": "What was Izumi's acting background before she became a school idol?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第5話『眠れる海のお姫様！』",
+          "part_name": "ABYSS",
+          "file_path": "story/105/第5話『眠れる海のお姫様！』/ABYSS.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ],
+      "required_citation_labels": ["105 · Episode 5 · Part ABYSS · Scene 1"]
+    },
+    {
+      "id": "q002_izumi_school_idol_start",
+      "question": "Who tells Izumi they will start school idol Katsuragi Izumi?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第5話『眠れる海のお姫様！』",
+          "part_name": "ABYSS",
+          "file_path": "story/105/第5話『眠れる海のお姫様！』/ABYSS.md",
+          "scene_start": 31,
+          "scene_end": 31
+        }
+      ]
+    },
+    {
+      "id": "q003_light_part",
+      "question": "What happens in the LIGHT part of Sleeping Sea Princess?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第5話『眠れる海のお姫様！』",
+          "part_name": "LIGHT",
+          "file_path": "story/105/第5話『眠れる海のお姫様！』/LIGHT.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q004_brand_new_start",
+      "question": "How does Brand New Stories begin?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第1話『Brand New Stories!!』",
+          "part_name": "0",
+          "file_path": "story/105/第1話『Brand New Stories!!』/0.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q005_dream_match_opening",
+      "question": "What is the setup at the start of Dream Match?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第2話『Dream Match！』",
+          "part_name": "1",
+          "file_path": "story/105/第2話『Dream Match！』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q006_srk_part",
+      "question": "What happens in the S.R.K. side part of Stars Longing?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第3話『星に憧れて、花は舞う』",
+          "part_name": "S.R.K.1",
+          "file_path": "story/105/第3話『星に憧れて、花は舞う』/S.R.K.1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q007_solar_back",
+      "question": "What does the first part of 太陽を目指した背中 focus on?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第4話『太陽を目指した背中』",
+          "part_name": "1",
+          "file_path": "story/105/第4話『太陽を目指した背中』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q008_future_flower_bd",
+      "question": "What happens in the BD part of 未来への花?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第6話『未来への花』",
+          "part_name": "BD",
+          "file_path": "story/105/第6話『未来への花』/BD.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q009_wagamama_interlude",
+      "question": "What is covered in the interlude of わがまま色の存在証明?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第7話『わがまま色の存在証明』",
+          "part_name": "幕間",
+          "file_path": "story/105/第7話『わがまま色の存在証明』/幕間.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q010_venus_part",
+      "question": "What happens in the VENUS part of 今はまだ遥か幽かな光?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第8話『今はまだ遥か幽かな光』",
+          "part_name": "VENUS",
+          "file_path": "story/105/第8話『今はまだ遥か幽かな光』/VENUS.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q011_all_link_friend",
+      "question": "What happens in the FRIEND part of ALL Link to YOU?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第9話『ALL Link to YOU』",
+          "part_name": "FRIEND",
+          "file_path": "story/105/第9話『ALL Link to YOU』/FRIEND.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q012_yueni_ruri_opening",
+      "question": "How does ゆえに、ルリあり begin?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第10話『ゆえに、ルリあり。』",
+          "part_name": "1",
+          "file_path": "story/105/第10話『ゆえに、ルリあり。』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q013_tree_part",
+      "question": "What happens in the TREE part of みんなで、花咲きたい?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第11話『みんなで、花咲きたい！』",
+          "part_name": "TREE",
+          "file_path": "story/105/第11話『みんなで、花咲きたい！』/TREE.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q014_flower_part",
+      "question": "What happens in the FLOWER part of みんなで、花咲きたい?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第11話『みんなで、花咲きたい！』",
+          "part_name": "FLOWER",
+          "file_path": "story/105/第11話『みんなで、花咲きたい！』/FLOWER.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q015_coda1",
+      "question": "What happens in CODA1 of ずっと花咲く僕らの桜?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第12話『ずっと花咲く僕らの桜』",
+          "part_name": "CODA1",
+          "file_path": "story/105/第12話『ずっと花咲く僕らの桜』/CODA1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q016_period",
+      "question": "What happens in PERIOD of ずっと花咲く僕らの桜?",
+      "gold_sources": [
+        {
+          "arc_id": "105",
+          "story_type": "Main",
+          "episode_name": "第12話『ずっと花咲く僕らの桜』",
+          "part_name": "PERIOD",
+          "file_path": "story/105/第12話『ずっと花咲く僕らの桜』/PERIOD.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q017_kaho_first_story",
+      "question": "What happens at the beginning of 花咲きたい?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第1話『花咲きたい！』",
+          "part_name": "1",
+          "file_path": "story/103/第1話『花咲きたい！』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q018_damedame_opening",
+      "question": "How does ダメダメ世界一 begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第2話『ダメダメ⇒世界一！？』",
+          "part_name": "1",
+          "file_path": "story/103/第2話『ダメダメ⇒世界一！？』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q019_rain_wind_sun_interlude",
+      "question": "What happens in the interlude of 雨と、風と、太陽と?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第3話『雨と、風と、太陽と』",
+          "part_name": "幕間",
+          "file_path": "story/103/第3話『雨と、風と、太陽と』/幕間.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q020_school_idol_opening",
+      "question": "How does わたしのスクールアイドル begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第4話『わたしのスクールアイドル』",
+          "part_name": "1",
+          "file_path": "story/103/第4話『わたしのスクールアイドル』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q021_kao_wo_agete",
+      "question": "What is the opening situation of 顔を上げて?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第5話『顔を上げて』",
+          "part_name": "1",
+          "file_path": "story/103/第5話『顔を上げて』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q022_ice_interlude",
+      "question": "What is in the interlude of わがまま on the ICE?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第6話『わがままon the ICE!!』",
+          "part_name": "幕間",
+          "file_path": "story/103/第6話『わがままon the ICE!!』/幕間.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q023_senpai_kouhai",
+      "question": "How does センパイとコウハイ begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第7話『センパイとコウハイ』",
+          "part_name": "1",
+          "file_path": "story/103/第7話『センパイとコウハイ』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q024_ruri_escape",
+      "question": "What happens at the start of ルリ・エスケープ?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第9話『ルリ・エスケープ』",
+          "part_name": "1",
+          "file_path": "story/103/第9話『ルリ・エスケープ』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q025_rurimegu_fanfare",
+      "question": "How does ルリめぐ・ファンファーレ begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第10話『ルリめぐ・ファンファーレ』",
+          "part_name": "1",
+          "file_path": "story/103/第10話『ルリめぐ・ファンファーレ』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q026_expectations_interlude",
+      "question": "What is in the interlude of 期待はおもい?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第12話『期待はおもい！』",
+          "part_name": "幕間",
+          "file_path": "story/103/第12話『期待はおもい！』/幕間.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q027_chased_caught",
+      "question": "How does 追いついたよ begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第13話『追いついたよ』",
+          "part_name": "1",
+          "file_path": "story/103/第13話『追いついたよ』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q028_link_like",
+      "question": "What happens at the start of Link Like?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第14話『Link！Like！』",
+          "part_name": "1",
+          "file_path": "story/103/第14話『Link！Like！』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q029_special_thanks",
+      "question": "How does Special Thanks begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第16話『Special Thanks』",
+          "part_name": "1",
+          "file_path": "story/103/第16話『Special Thanks』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    },
+    {
+      "id": "q030_fourth_sakura",
+      "question": "How does いずれ会う四度目の桜 begin?",
+      "gold_sources": [
+        {
+          "arc_id": "103",
+          "story_type": "Main",
+          "episode_name": "第18話『いずれ会う四度目の桜』",
+          "part_name": "1",
+          "file_path": "story/103/第18話『いずれ会う四度目の桜』/1.md",
+          "scene_start": 0,
+          "scene_end": 0
+        }
+      ]
+    }
+  ]
+}

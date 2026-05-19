@@ -45,6 +45,18 @@ indexer query "What happened in the 105th term?" --no-analyze
 indexer chat --no-analyze
 ```
 
+## Retrieval Evaluation
+
+Run the checked-in retrieval golden set without answer generation:
+
+```powershell
+uv run indexer eval run --golden-set eval/golden_questions.json --mode raw --output runs/baseline.json
+```
+
+Use `--mode raw-analyze` to compare analyzer-derived filters, or
+`--mode raw-rerank` to exercise the placeholder reranker metric surface. Until
+the reranker lands, reranker metrics are emitted as unavailable.
+
 ## Index Rebuilds
 
 Raw evidence is embedded as coalesced retrieval chunks over adjacent source

@@ -7,6 +7,15 @@ from typing import Any
 
 from ..console import safe_print
 from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
+from ..eval.models import (
+    CandidateScores,
+    CandidateTrace,
+    EvalMode,
+    QueryTrace,
+    SourceIdentity,
+    StageName,
+    StageTrace,
+)
 from ..indexer.parser import StoryParser
 from ..indexer.source_store import SourceRecordStore
 from ..lexical import LexicalIndex, expand_query_with_glossary
@@ -33,6 +42,7 @@ INSUFFICIENT_SOURCE_CONTEXT = (
 )
 
 Node = tuple[str, dict[str, Any]]
+ScoredRankedNode = tuple[Node, dict[str, Any], int]
 
 
 @dataclass(frozen=True)
@@ -534,6 +544,21 @@ class StoryQueryEngine:
             for document, metadata in zip(documents[0], metadatas[0], strict=False)
         ]
 
+    def _results_to_ranked_nodes(
+        self,
+        results: dict[str, Any],
+    ) -> list[tuple[Node, float | None]]:
+        documents = results.get("documents") or [[]]
+        metadatas = results.get("metadatas") or [[]]
+        distances = results.get("distances") or [[]]
+        output = []
+        for index, (document, metadata) in enumerate(
+            zip(documents[0], metadatas[0], strict=False)
+        ):
+            distance = distances[0][index] if distances and distances[0] and index < len(distances[0]) else None
+            output.append(((document, dict(metadata or {})), distance))
+        return output
+
     def _flat_results_to_nodes(self, results: dict[str, Any]) -> list[Node]:
         documents = results.get("documents") or []
         metadatas = results.get("metadatas") or []
@@ -553,6 +578,29 @@ class StoryQueryEngine:
         if lexical_index is None:
             return []
         return lexical_index.search(question, n_results=n_results, where=where)
+
+    def _retrieve_with_dense_scores(
+        self,
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None,
+        query_embedding: list[float],
+    ) -> list[tuple[Node, float | None]]:
+        query_kwargs: dict[str, Any] = {
+            "query_embeddings": [query_embedding],
+            "n_results": n_results,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            query_kwargs["where"] = where
+
+        try:
+            results = self.collection.query(**query_kwargs)
+        except ValueError:
+            query_kwargs["include"] = ["documents", "metadatas"]
+            results = self.collection.query(**query_kwargs)
+        return self._results_to_ranked_nodes(results)
 
     def _node_key(self, document: str, metadata: dict[str, Any]) -> tuple[Any, ...]:
         scene_start = metadata.get("scene_start")
@@ -623,6 +671,39 @@ class StoryQueryEngine:
             key=lambda key: (-scores[key], first_seen[key]),
         )
         return [nodes_by_key[key] for key in ranked_keys]
+
+    def _rrf_fuse_with_scores(
+        self,
+        ranked_lists: list[list[Node]],
+        *,
+        k: int | None = None,
+    ) -> list[tuple[Node, float]]:
+        rrf_k = self._config().rrf_k if k is None else k
+        if rrf_k < 1:
+            raise ValueError("rrf k must be at least 1")
+
+        scores: dict[tuple[Any, ...], float] = {}
+        nodes_by_key: dict[tuple[Any, ...], Node] = {}
+        first_seen: dict[tuple[Any, ...], int] = {}
+        seen_order = 0
+
+        for ranked_list in ranked_lists:
+            seen_in_list: set[tuple[Any, ...]] = set()
+            for rank, (document, metadata) in enumerate(ranked_list, start=1):
+                key = self._node_key(document, metadata)
+                if key in seen_in_list:
+                    continue
+                seen_in_list.add(key)
+
+                if key not in nodes_by_key:
+                    nodes_by_key[key] = (document, metadata)
+                    first_seen[key] = seen_order
+                    seen_order += 1
+
+                scores[key] = scores.get(key, 0.0) + (1.0 / (rrf_k + rank))
+
+        ranked_keys = sorted(scores, key=lambda key: (-scores[key], first_seen[key]))
+        return [(nodes_by_key[key], scores[key]) for key in ranked_keys]
 
     def _hybrid_retrieve(
         self,
@@ -994,20 +1075,20 @@ class StoryQueryEngine:
                 score += 1
         return score
 
-    def _rank_raw_candidates(
+    def _score_raw_candidates(
         self,
         question: str,
         expanded_question: str,
         raw_nodes: list[Node],
         seed_nodes: list[Node],
-    ) -> list[Node]:
+    ) -> list[ScoredRankedNode]:
         terms = self._query_terms(expanded_question)
         seed_rank = {
             self._node_key(document, metadata): index
             for index, (document, metadata) in enumerate(seed_nodes)
         }
 
-        scored_nodes = []
+        scored_nodes: list[tuple[int, int, int, Node, dict[str, Any]]] = []
         for index, (document, metadata) in enumerate(raw_nodes):
             searchable = " ".join(
                 [
@@ -1027,26 +1108,54 @@ class StoryQueryEngine:
             )
             key = self._node_key(document, metadata)
             is_seed = key in seed_rank
+            metadata_match_score = self._metadata_match_score(question, metadata)
+            near_seed_score = self._near_seed_score(metadata, seed_nodes)
             score = (
                 matched_terms * 25
                 + speaker_matches * 30
-                + self._metadata_match_score(question, metadata) * 40
-                + self._near_seed_score(metadata, seed_nodes) * 10
+                + metadata_match_score * 40
+                + near_seed_score * 10
                 + (20 if is_seed else 0)
             )
+            signal_breakdown = {
+                "matched_terms": matched_terms,
+                "speaker_matches": speaker_matches,
+                "metadata_match_score": metadata_match_score,
+                "near_seed_score": near_seed_score,
+                "is_seed": is_seed,
+            }
             scored_nodes.append(
                 (
                     -score,
                     seed_rank.get(key, len(seed_rank) + index),
                     index,
-                    document,
-                    metadata,
+                    (document, metadata),
+                    signal_breakdown,
                 )
             )
 
         scored_nodes.sort()
-        ranked_nodes = [(document, metadata) for _, _, _, document, metadata in scored_nodes]
-        return ranked_nodes[: self._config().max_ranked_candidates]
+        return [
+            (node, signal_breakdown, -negative_score)
+            for negative_score, _, _, node, signal_breakdown in scored_nodes
+        ][: self._config().max_ranked_candidates]
+
+    def _rank_raw_candidates(
+        self,
+        question: str,
+        expanded_question: str,
+        raw_nodes: list[Node],
+        seed_nodes: list[Node],
+    ) -> list[Node]:
+        return [
+            node
+            for node, _, _ in self._score_raw_candidates(
+                question,
+                expanded_question,
+                raw_nodes,
+                seed_nodes,
+            )
+        ]
 
     def _build_context_chunks(self, raw_nodes: list[Node]) -> list[str]:
         context_chunks = []
@@ -1099,6 +1208,163 @@ class StoryQueryEngine:
         safe_print("Synthesizing final answer with Gemini...")
         result = create_text_agent(system_prompt).run_sync(user_prompt)
         return result.output.strip() or "No answer generated."
+
+    def _trace_node_id(self, document: str, metadata: dict[str, Any]) -> str:
+        chunk_id = metadata.get("chunk_id")
+        if isinstance(chunk_id, str) and chunk_id:
+            return chunk_id
+        file_path = metadata.get("file_path")
+        span = self._scene_span(metadata)
+        if isinstance(file_path, str) and span is not None:
+            return f"{file_path}:{span[0]}-{span[1]}"
+        key = self._node_key(document, metadata)
+        return json.dumps(key, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _source_identity(self, metadata: dict[str, Any]) -> SourceIdentity | None:
+        span = self._scene_span(metadata)
+        if span is None:
+            return None
+        return SourceIdentity(
+            arc_id=str(metadata.get("arc_id", "")),
+            story_type=str(metadata.get("story_type", "")),
+            episode_name=str(metadata.get("episode_name", "")),
+            part_name=str(metadata.get("part_name", "")),
+            file_path=str(metadata.get("file_path", "")),
+            scene_start=span[0],
+            scene_end=span[1],
+        )
+
+    def _trace_candidate(
+        self,
+        node: Node,
+        *,
+        rank: int,
+        scores: CandidateScores | None = None,
+        signal_breakdown: dict[str, Any] | None = None,
+        provenance: str | None = None,
+        provenance_node_id: str | None = None,
+    ) -> CandidateTrace:
+        document, metadata = node
+        return CandidateTrace(
+            node_id=self._trace_node_id(document, metadata),
+            rank=rank,
+            candidate_kind="raw_span" if metadata.get("summary_level") == 4 else "summary",
+            text=document,
+            scores=scores or CandidateScores(),
+            metadata=dict(metadata),
+            source_span=self._source_identity(metadata),
+            signal_breakdown=signal_breakdown or {},
+            provenance=provenance,  # type: ignore[arg-type]
+            provenance_node_id=provenance_node_id,
+        )
+
+    def _trace_stage(
+        self,
+        name: StageName,
+        candidates: list[CandidateTrace] | None,
+        unavailable_reason: str | None = None,
+    ) -> StageTrace:
+        return StageTrace(
+            name=name,
+            candidates=candidates,
+            unavailable_reason=unavailable_reason,
+        )
+
+    def _neighbor_trace_provenance(
+        self,
+        node: Node,
+        seed_nodes: list[Node],
+    ) -> tuple[str | None, str | None]:
+        document, metadata = node
+        key = self._node_key(document, metadata)
+        seed_keys = {
+            self._node_key(seed_document, seed_metadata)
+            for seed_document, seed_metadata in seed_nodes
+        }
+        if key in seed_keys:
+            return "direct_hit", None
+
+        candidate_span = self._scene_span(metadata)
+        if candidate_span is None:
+            return None, None
+        window = self._config().neighbor_scene_window
+        for seed_document, seed_metadata in seed_nodes:
+            if self._raw_part_filter(metadata) != self._raw_part_filter(seed_metadata):
+                continue
+            seed_span = self._scene_span(seed_metadata)
+            if seed_span is None:
+                continue
+            if candidate_span[0] <= seed_span[1] + window and candidate_span[1] >= seed_span[0] - window:
+                return "neighbor_of", self._trace_node_id(seed_document, seed_metadata)
+        return None, None
+
+    def _hybrid_retrieve_trace(
+        self,
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None,
+        query_embedding: list[float] | None,
+        dense_unavailable_reason: str | None = None,
+    ) -> tuple[list[Node], dict[StageName, StageTrace]]:
+        dense_nodes: list[Node] = []
+        dense_distances: dict[tuple[Any, ...], float | None] = {}
+        if query_embedding is None:
+            dense_unavailable_reason = dense_unavailable_reason or "query embedding unavailable"
+        else:
+            try:
+                dense_ranked_nodes = self._retrieve_with_dense_scores(
+                    question,
+                    n_results=n_results,
+                    where=where,
+                    query_embedding=query_embedding,
+                )
+                for node, distance in dense_ranked_nodes:
+                    dense_nodes.append(node)
+                    dense_distances[self._node_key(*node)] = distance
+            except Exception as exc:
+                dense_unavailable_reason = f"dense retrieval unavailable: {exc}"
+
+        lexical_nodes = self._lexical_retrieve(question, n_results=n_results, where=where)
+        fused_with_scores = self._rrf_fuse_with_scores([dense_nodes, lexical_nodes])[:n_results]
+        fused_nodes = [node for node, _ in fused_with_scores]
+
+        dense_candidates = [
+            self._trace_candidate(
+                node,
+                rank=rank,
+                scores=CandidateScores(
+                    dense_rank=rank,
+                    dense_distance=dense_distances.get(self._node_key(*node)),
+                ),
+            )
+            for rank, node in enumerate(dense_nodes, start=1)
+        ]
+        lexical_candidates = [
+            self._trace_candidate(
+                node,
+                rank=rank,
+                scores=CandidateScores(lexical_rank=rank),
+            )
+            for rank, node in enumerate(lexical_nodes, start=1)
+        ]
+        fused_candidates = [
+            self._trace_candidate(
+                node,
+                rank=rank,
+                scores=CandidateScores(rrf_score=score),
+            )
+            for rank, (node, score) in enumerate(fused_with_scores, start=1)
+        ]
+        return fused_nodes, {
+            "dense_raw": self._trace_stage(
+                "dense_raw",
+                None if dense_unavailable_reason else dense_candidates,
+                dense_unavailable_reason,
+            ),
+            "lexical_raw": self._trace_stage("lexical_raw", lexical_candidates),
+            "rrf_fusion": self._trace_stage("rrf_fusion", fused_candidates),
+        }
 
     def _raw_only_retrieve(
         self,
@@ -1185,6 +1451,173 @@ class StoryQueryEngine:
             for node in raw_nodes
             if (order := self._story_order(node[1])) is not None and order < boundary_order
         ]
+
+    def retrieve_with_trace(
+        self,
+        question: str,
+        *,
+        query_id: str = "ad-hoc",
+        mode: EvalMode = "raw",
+        answer_mode: bool = False,
+    ) -> QueryTrace:
+        """Executes the raw-first retrieval flow and returns deterministic stage traces."""
+        analysis = None
+        if mode == "raw-analyze" or self._config().enable_query_analysis:
+            analysis = analyze_query(question, self.glossary)
+
+        expanded_question = self._expanded_question(question)
+        query_embedding = None
+        dense_unavailable_reason = None
+        try:
+            query_embedding = self._query_embedding(expanded_question)
+        except Exception as exc:
+            dense_unavailable_reason = f"query embedding unavailable: {exc}"
+
+        raw_where = self._where_for_analysis(
+            analysis,
+            summary_level=4,
+            include_scene_constraint=True,
+        )
+        retrieved_nodes, stages = self._hybrid_retrieve_trace(
+            expanded_question,
+            n_results=self._config().raw_candidate_count,
+            where=raw_where,
+            query_embedding=query_embedding,
+            dense_unavailable_reason=dense_unavailable_reason,
+        )
+
+        raw_nodes = self._raw_evidence_nodes(retrieved_nodes)
+        stages["raw_seed_filter"] = self._trace_stage(
+            "raw_seed_filter",
+            [
+                self._trace_candidate(node, rank=rank)
+                for rank, node in enumerate(raw_nodes, start=1)
+            ],
+        )
+
+        analysis_filtered_nodes = raw_nodes
+        if analysis is not None:
+            analysis_filtered_nodes = self._filter_raw_nodes_by_analysis(raw_nodes, analysis)
+            stages["analysis_filter"] = self._trace_stage(
+                "analysis_filter",
+                [
+                    self._trace_candidate(node, rank=rank)
+                    for rank, node in enumerate(analysis_filtered_nodes, start=1)
+                ],
+            )
+        else:
+            stages["analysis_filter"] = self._trace_stage(
+                "analysis_filter",
+                None,
+                "query analysis disabled",
+            )
+
+        if analysis_filtered_nodes:
+            expanded_raw_nodes = self._expand_raw_neighbors(
+                expanded_question,
+                analysis_filtered_nodes,
+                query_embedding=query_embedding,
+            )
+        else:
+            expanded_raw_nodes = []
+        stages["neighbor_expansion"] = self._trace_stage(
+            "neighbor_expansion",
+            [
+                self._trace_candidate(
+                    node,
+                    rank=rank,
+                    provenance=provenance,
+                    provenance_node_id=provenance_node_id,
+                )
+                for rank, node in enumerate(expanded_raw_nodes, start=1)
+                for provenance, provenance_node_id in [
+                    self._neighbor_trace_provenance(node, analysis_filtered_nodes)
+                ]
+            ],
+        )
+
+        semantic_nodes = expanded_raw_nodes
+        semantic_reason = "query analysis disabled"
+        if analysis is not None:
+            semantic_reason = "semantic boundary not detected"
+            semantic_nodes = self._filter_raw_nodes_by_analysis(semantic_nodes, analysis)
+            if analysis.semantic_boundary is not None:
+                semantic_nodes = self._filter_before_semantic_boundary(
+                    question,
+                    expanded_question,
+                    semantic_nodes,
+                    analysis_filtered_nodes,
+                    analysis,
+                )
+                semantic_reason = ""
+        stages["semantic_boundary_filter"] = self._trace_stage(
+            "semantic_boundary_filter",
+            [
+                self._trace_candidate(node, rank=rank)
+                for rank, node in enumerate(semantic_nodes, start=1)
+            ]
+            if semantic_reason == ""
+            else None,
+            semantic_reason or None,
+        )
+
+        ranked_with_scores = self._score_raw_candidates(
+            question,
+            expanded_question,
+            semantic_nodes,
+            analysis_filtered_nodes,
+        )
+        deterministic_nodes = [node for node, _, _ in ranked_with_scores]
+        stages["deterministic_ranking"] = self._trace_stage(
+            "deterministic_ranking",
+            [
+                self._trace_candidate(
+                    node,
+                    rank=rank,
+                    scores=CandidateScores(deterministic_score=float(score)),
+                    signal_breakdown=signal_breakdown,
+                )
+                for rank, (node, signal_breakdown, score) in enumerate(
+                    ranked_with_scores,
+                    start=1,
+                )
+            ],
+        )
+
+        if analysis is not None:
+            final_raw_nodes = self._filter_raw_nodes_by_analysis(deterministic_nodes, analysis)[
+                : self._config().final_top_k
+            ]
+        else:
+            final_raw_nodes = deterministic_nodes[: self._config().final_top_k]
+        stages["final_top_k"] = self._trace_stage(
+            "final_top_k",
+            [
+                self._trace_candidate(node, rank=rank)
+                for rank, node in enumerate(final_raw_nodes, start=1)
+            ],
+        )
+        stages["reranker"] = self._trace_stage(
+            "reranker",
+            None,
+            "reranker stage unavailable; #23 has not landed",
+        )
+
+        answer_text = None
+        if answer_mode and final_raw_nodes:
+            answer_text = self._answer_from_raw_evidence(question, final_raw_nodes, analysis)
+
+        return QueryTrace(
+            query_id=query_id,
+            question=question,
+            mode=mode,
+            config=self._config().__dict__,
+            stages=stages,
+            final_citation_labels=[
+                self._citation_label(metadata) for _, metadata in final_raw_nodes
+            ],
+            answer_text=answer_text,
+        )
 
     def query(self, question: str) -> str:
         """Executes the raw-first RAG query flow."""
