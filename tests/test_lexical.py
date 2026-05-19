@@ -158,3 +158,36 @@ def test_upsert_story_nodes_writes_matching_lexical_records(tmp_path: Path, monk
     assert lexical_index.search("Kaho", n_results=5) == [
         ("花帆: こんにちは", collection_records[record_id]["metadata"])
     ]
+
+
+def test_summary_lexical_document_includes_location_and_tier_header() -> None:
+    node = StoryNode(
+        text="花帆 and さやか talk about blooming.",
+        metadata=StoryMetadata(
+            arc_id="103",
+            story_type="Main",
+            episode_name="第1話『花咲きたい！』",
+            part_name="1",
+            file_path="story/103/第1話『花咲きたい！』/1.md",
+            parent_year_id="103",
+            parent_episode_id="103|Main|第1話『花咲きたい！』",
+            parent_part_id="103|Main|第1話『花咲きたい！』|1",
+        ),
+        summary_level=3,
+    )
+
+    lexical_document = cli._lexical_document(node)
+
+    assert lexical_document.startswith(
+        "\n".join(
+            [
+                "Year: 103",
+                "Story type: Main",
+                "Episode: 第1話『花咲きたい！』",
+                "Part: 1",
+                "Summary level: 3",
+                "Summary tier: Part",
+                "花帆 and さやか talk about blooming.",
+            ]
+        )
+    )
