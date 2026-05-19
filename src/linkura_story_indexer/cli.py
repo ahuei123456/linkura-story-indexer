@@ -141,9 +141,39 @@ def _embedding_document_title(node: StoryNode) -> str:
     return " | ".join(str(part) for part in location if part)
 
 
+def _summary_tier(node: StoryNode) -> str:
+    if node.summary_level == 1:
+        return "Year"
+    if node.summary_level == 2:
+        return "Episode"
+    if node.summary_level == 3:
+        return "Part"
+    return f"Level {node.summary_level}"
+
+
+def _summary_location_header(node: StoryNode) -> str:
+    meta = node.metadata
+    episode_name = meta.episode_name if node.summary_level in {2, 3} else "ALL_EPISODES"
+    part_name = meta.part_name if node.summary_level == 3 else "ALL_PARTS"
+    return "\n".join(
+        [
+            f"Year: {meta.arc_id}",
+            f"Story type: {meta.story_type}",
+            f"Episode: {episode_name}",
+            f"Part: {part_name}",
+            f"Summary level: {node.summary_level}",
+            f"Summary tier: {_summary_tier(node)}",
+            "",
+        ]
+    )
+
+
 def _embedding_document(node: StoryNode, glossary: dict | None = None) -> EmbeddingDocument:
     if node.summary_level != 4:
-        return EmbeddingDocument(text=node.text, title=_embedding_document_title(node))
+        return EmbeddingDocument(
+            text=f"{_summary_location_header(node)}{node.text}",
+            title=_embedding_document_title(node),
+        )
 
     meta = node.metadata
     speakers = ", ".join(meta.detected_speakers) if meta.detected_speakers else "none"
@@ -169,18 +199,7 @@ def _embedding_document(node: StoryNode, glossary: dict | None = None) -> Embedd
 def _lexical_document(node: StoryNode, glossary: dict | None = None) -> str:
     embedding_document = _embedding_document(node, glossary)
     if node.summary_level != 4:
-        meta = node.metadata
-        header = "\n".join(
-            [
-                f"Year: {meta.arc_id}",
-                f"Story type: {meta.story_type}",
-                f"Episode: {meta.episode_name}",
-                f"Part: {meta.part_name}",
-                f"Summary level: {node.summary_level}",
-                "",
-            ]
-        )
-        return f"{header}{node.text}"
+        return embedding_document.text
     return embedding_document.text
 
 

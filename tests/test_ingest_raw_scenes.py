@@ -4,6 +4,7 @@ from typing import Any
 from linkura_story_indexer import cli
 from linkura_story_indexer.database import RETRIEVAL_DOCUMENT, EmbeddingInput
 from linkura_story_indexer.indexer.processor import StoryProcessor
+from linkura_story_indexer.models.story import StoryMetadata, StoryNode
 
 
 class FakeCollection:
@@ -37,6 +38,59 @@ def _write_story_file(root: Path, relative_path: str, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _summary_node(*, summary_level: int, text: str = "Summary text") -> StoryNode:
+    return StoryNode(
+        text=text,
+        metadata=StoryMetadata(
+            arc_id="103",
+            story_type="Main",
+            episode_name="第1話『花咲きたい！』",
+            part_name="1",
+            file_path="story/103/第1話『花咲きたい！』/1.md",
+            parent_year_id="103",
+            parent_episode_id="103|Main|第1話『花咲きたい！』",
+            parent_part_id="103|Main|第1話『花咲きたい！』|1",
+        ),
+        summary_level=summary_level,
+    )
+
+
+def test_part_summary_embedding_document_includes_location_and_tier_header() -> None:
+    embedding_document = cli._embedding_document(_summary_node(summary_level=3))
+
+    assert embedding_document.text.startswith(
+        "\n".join(
+            [
+                "Year: 103",
+                "Story type: Main",
+                "Episode: 第1話『花咲きたい！』",
+                "Part: 1",
+                "Summary level: 3",
+                "Summary tier: Part",
+                "Summary text",
+            ]
+        )
+    )
+
+
+def test_episode_summary_embedding_document_uses_all_parts_header() -> None:
+    embedding_document = cli._embedding_document(_summary_node(summary_level=2))
+
+    assert "Episode: 第1話『花咲きたい！』" in embedding_document.text
+    assert "Part: ALL_PARTS" in embedding_document.text
+    assert "Summary level: 2" in embedding_document.text
+    assert "Summary tier: Episode" in embedding_document.text
+
+
+def test_year_summary_embedding_document_uses_all_episode_and_part_header() -> None:
+    embedding_document = cli._embedding_document(_summary_node(summary_level=1))
+
+    assert "Episode: ALL_EPISODES" in embedding_document.text
+    assert "Part: ALL_PARTS" in embedding_document.text
+    assert "Summary level: 1" in embedding_document.text
+    assert "Summary tier: Year" in embedding_document.text
 
 
 def test_raw_scene_upsert_indexes_every_scene_with_required_metadata(
