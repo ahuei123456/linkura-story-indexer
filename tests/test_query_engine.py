@@ -1143,3 +1143,56 @@ def test_citation_label_and_metadata_handle_scene_spans():
         "source_scene_count": 7,
         "canonical_story_order": 30,
     }
+
+
+def test_summary_citation_labels_include_summary_scope_without_scene():
+    engine = make_engine()
+
+    year_label = engine._citation_label(
+        {
+            "arc_id": "103",
+            "story_type": "Main",
+            "episode_name": "第1話『テスト』",
+            "episode_number": 1,
+            "part_name": "1",
+            "summary_level": 1,
+            "scene_index": 0,
+        }
+    )
+    episode_label = engine._citation_label(
+        {
+            "arc_id": "103",
+            "story_type": "Main",
+            "episode_name": "第3話『テスト』",
+            "episode_number": 3,
+            "part_name": "2",
+            "summary_level": 2,
+            "scene_index": 0,
+        }
+    )
+    part_label = engine._citation_label(
+        {
+            "arc_id": "103",
+            "story_type": "Main",
+            "episode_name": "第3話『テスト』",
+            "episode_number": 3,
+            "part_name": "2",
+            "summary_level": 3,
+            "scene_index": 0,
+        }
+    )
+    side_story_episode = engine._summary_episode_value(
+        {
+            "story_type": "Side",
+            "episode_name": "～Shades of Stars～",
+            "summary_level": 2,
+        }
+    )
+
+    assert year_label == "103 · Main · Episode ALL_EPISODES · Part ALL_PARTS · summary_level 1"
+    assert episode_label == "103 · Main · Episode 3 · Part ALL_PARTS · summary_level 2"
+    assert part_label == "103 · Main · Episode 3 · Part 2 · summary_level 3"
+    assert side_story_episode == "～Shades of Stars～"
+    assert "Scene" not in year_label
+    assert "Scene" not in episode_label
+    assert "Scene" not in part_label

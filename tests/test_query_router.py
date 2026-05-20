@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from linkura_story_indexer.cli import _router_debug_lines
+from linkura_story_indexer.query import engine as query_engine
 from linkura_story_indexer.query.engine import (
     RetrievalConfig,
     RetrievalTraceResult,
@@ -44,6 +45,23 @@ def raw_node(text: str = "raw scene") -> tuple[str, dict[str, Any]]:
             "source_scene_count": 1,
             "canonical_story_order": 1,
             "chunk_id": "chunk:103:1:0",
+        },
+    )
+
+
+def summary_node(text: str = "summary") -> tuple[str, dict[str, Any]]:
+    return (
+        text,
+        {
+            "arc_id": "103",
+            "story_type": "Main",
+            "episode_name": "第1話『花咲きたい！』",
+            "episode_number": 1,
+            "part_name": "1",
+            "summary_level": 1,
+            "scene_index": 0,
+            "parent_year_id": "103",
+            "canonical_story_order": 1,
         },
     )
 
@@ -216,6 +234,75 @@ def test_llm_router_trace_records_router_metadata_and_final_candidates(
     assert trace.stages["router"].metadata["fallback_used"] is False
     assert trace.stages["final_top_k"].candidates is not None
     assert trace.stages["final_top_k"].candidates[0].text == "routed raw scene"
+
+
+def test_llm_router_summary_route_uses_summary_evidence_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter(
+        "search_summaries",
+        {"query": "routed summary query", "top_k": 1, "summary_level": 1},
+    )
+    prompts: list[str] = []
+    console_lines: list[str] = []
+
+    class FakeAgent:
+        def run_sync(self, prompt: str) -> Any:
+            prompts.append(prompt)
+
+            class Result:
+                output = "answered from summary"
+
+            return Result()
+
+    def fake_retrieve_summary_nodes_with_trace(
+        question: str,
+        *,
+        where: dict[str, Any] | None,
+        top_k: int,
+    ) -> RetrievalTraceResult:
+        assert question == "routed summary query"
+        assert where == {"summary_level": 1}
+        assert top_k == 1
+        return RetrievalTraceResult(
+            nodes=[summary_node("Kaho starts the school year in summary form.")],
+            stages={},
+        )
+
+    monkeypatch.setattr(
+        engine,
+        "retrieve_summary_nodes_with_trace",
+        fake_retrieve_summary_nodes_with_trace,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_fetch_raw_text",
+        lambda metadata: pytest.fail("_fetch_raw_text should not be called for summaries"),
+    )
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+    monkeypatch.setattr(query_engine, "safe_print", lambda message: console_lines.append(message))
+
+    trace = engine.retrieve_with_trace("original", query_id="q-summary", answer_mode=True)
+
+    assert trace.mode == "llm_router"
+    assert trace.answer_text == "answered from summary"
+    assert trace.stages["router"].metadata["chosen_tool"] == "search_summaries"
+    assert trace.stages["final_top_k"].candidates is not None
+    assert trace.stages["final_top_k"].candidates[0].candidate_kind == "summary"
+    assert trace.final_citation_labels == [
+        "103 · Main · Episode ALL_EPISODES · Part ALL_PARTS · summary_level 1"
+    ]
+    assert prompts
+    assert "SUMMARY EVIDENCE 1" in prompts[0]
+    assert "summary_level 1" in prompts[0]
+    assert "Episode: ALL_EPISODES" in prompts[0]
+    assert "Part: ALL_PARTS" in prompts[0]
+    assert "GENERATED SUMMARY TEXT" in prompts[0]
+    assert "Scene 1" not in prompts[0]
+    assert any("Summary evidence 1" in line for line in console_lines)
+    assert all("Scene 1" not in line for line in console_lines)
 
 
 def test_llm_router_returns_direct_glossary_answer() -> None:

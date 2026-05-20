@@ -202,6 +202,10 @@ def test_search_summaries_filters_level_and_arc(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert [candidate.text for candidate in result.candidates] == ["Kaho starts school."]
+    assert (
+        result.candidates[0].citation_label
+        == "103 · Main · Episode 1 · Part ALL_PARTS · summary_level 2"
+    )
     assert captured == [
         {
             "n_results": 3,

@@ -227,11 +227,23 @@ class StoryQueryEngine:
         self,
         arc_ids: set[str],
         analysis: QueryAnalysis | None = None,
+        *,
+        context_kind: Literal["raw", "summary"] = "raw",
     ) -> str:
         """Builds the system prompt with invariants and state ledger."""
+        context_description = (
+            "provided raw source text"
+            if context_kind == "raw"
+            else "provided retrieved context, which may be generated summaries rather than raw source text"
+        )
+        citation_source = (
+            "retrieved raw evidence labels"
+            if context_kind == "raw"
+            else "retrieved context labels"
+        )
         prompt = (
             "You are an expert lore-keeper and archivist for a Japanese narrative story.\n"
-            "Answer based strictly on the provided raw source text in retrieved context.\n"
+            f"Answer based strictly on the {context_description}.\n"
             "Do NOT use outside knowledge. If the provided context does not contain the answer, "
             "say so.\n"
             "Cite sources using only the CITATION labels provided in retrieved context. "
@@ -251,7 +263,7 @@ class StoryQueryEngine:
             prompt += "\n--- STATE LEDGER (FACTS) ---\n"
             prompt += (
                 "Use these source-backed facts only for routing and consistency. "
-                "Final answer citations must still come from retrieved raw evidence labels.\n"
+                f"Final answer citations must still come from {citation_source}.\n"
             )
             for arc_id in sorted(arc_ids):
                 arc_facts = [fact for fact in ledger_facts if fact.get("arc") == arc_id]
@@ -263,6 +275,10 @@ class StoryQueryEngine:
         return prompt
 
     def _citation_label(self, metadata: dict[str, Any]) -> str:
+        summary_level = metadata.get("summary_level")
+        if summary_level in {1, 2, 3}:
+            return self._summary_citation_label(metadata)
+
         arc_id = metadata.get("arc_id", "unknown")
         episode = self._episode_label(metadata)
 
@@ -271,6 +287,43 @@ class StoryQueryEngine:
         if scene_label:
             return f"{arc_id} · {episode} · Part {part} · {scene_label}"
         return f"{arc_id} · {episode} · Part {part}"
+
+    def _summary_citation_label(self, metadata: dict[str, Any]) -> str:
+        summary_level = metadata.get("summary_level")
+        arc_id = metadata.get("arc_id", "unknown")
+        story_type = metadata.get("story_type", "unknown")
+        episode = self._summary_episode_label(metadata)
+        part = self._summary_part_label(metadata)
+        return (
+            f"{arc_id} · {story_type} · {episode} · Part {part} · "
+            f"summary_level {summary_level}"
+        )
+
+    def _summary_episode_label(self, metadata: dict[str, Any]) -> str:
+        if metadata.get("summary_level") == 1:
+            return "Episode ALL_EPISODES"
+
+        episode_number = metadata.get("episode_number")
+        if isinstance(episode_number, int) and episode_number > 0:
+            return f"Episode {episode_number}"
+
+        return self._episode_label(metadata)
+
+    def _summary_episode_value(self, metadata: dict[str, Any]) -> str:
+        episode = self._summary_episode_label(metadata)
+        if episode.startswith("Episode "):
+            return episode.removeprefix("Episode ")
+        if episode.startswith("Side Story "):
+            return episode.removeprefix("Side Story ")
+        return episode
+
+    def _summary_part_label(self, metadata: dict[str, Any]) -> str:
+        if metadata.get("summary_level") in {1, 2}:
+            return "ALL_PARTS"
+        part = metadata.get("part_name")
+        if isinstance(part, str) and part:
+            return part
+        return "unknown"
 
     def _scene_label(self, metadata: dict[str, Any]) -> str:
         scene_start = metadata.get("scene_start")
@@ -291,6 +344,18 @@ class StoryQueryEngine:
         return ""
 
     def _citation_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        if metadata.get("summary_level") in {1, 2, 3}:
+            return {
+                "arc_id": metadata.get("arc_id"),
+                "story_type": metadata.get("story_type"),
+                "episode": self._summary_episode_value(metadata),
+                "part": self._summary_part_label(metadata),
+                "summary_level": metadata.get("summary_level"),
+                "parent_year_id": metadata.get("parent_year_id"),
+                "parent_episode_id": metadata.get("parent_episode_id"),
+                "parent_part_id": metadata.get("parent_part_id"),
+                "canonical_story_order": metadata.get("canonical_story_order"),
+            }
         return {
             "file_path": metadata.get("file_path"),
             "scene_index": metadata.get("scene_index"),
@@ -1200,6 +1265,36 @@ class StoryQueryEngine:
 
         return context_chunks
 
+    def _build_summary_context_chunks(self, summary_nodes: list[Node]) -> list[str]:
+        context_chunks = []
+        for idx, (document, meta) in enumerate(summary_nodes):
+            citation = self._summary_citation_label(meta)
+            citation_metadata = self._citation_metadata(meta)
+            safe_print(
+                f"  Summary evidence {idx + 1}: Year {meta.get('arc_id')}, "
+                f"Story type: {meta.get('story_type')}, "
+                f"Episode: {self._summary_episode_value(meta)}, "
+                f"Part: {self._summary_part_label(meta)}, "
+                f"summary_level: {meta.get('summary_level')}"
+            )
+            context_chunk = (
+                f"--- SUMMARY EVIDENCE {idx + 1} "
+                f"(CITATION: {citation}; "
+                f"METADATA: {json.dumps(citation_metadata, ensure_ascii=False)}) ---\n"
+            )
+            context_chunk += (
+                "SUMMARY METADATA:\n"
+                f"Year: {meta.get('arc_id')}\n"
+                f"Story type: {meta.get('story_type')}\n"
+                f"Episode: {self._summary_episode_value(meta)}\n"
+                f"Part: {self._summary_part_label(meta)}\n"
+                f"Summary level: {meta.get('summary_level')}\n\n"
+                f"GENERATED SUMMARY TEXT:\n{document}\n"
+            )
+            context_chunks.append(context_chunk)
+
+        return context_chunks
+
     def _raw_arc_ids(self, raw_nodes: list[tuple[str, dict[str, Any]]]) -> set[str]:
         arc_ids = set()
         for _, metadata in raw_nodes:
@@ -1222,6 +1317,33 @@ class StoryQueryEngine:
             "Please answer the following question based ONLY on the raw source text provided below.\n\n"
             "Every factual claim should cite one or more provided CITATION labels exactly as written. "
             "Use episode numbers in citations, never Japanese episode titles.\n\n"
+            f"QUESTION: {question}\n\n"
+            f"CONTEXT:\n{combined_context}"
+        )
+
+        safe_print("Synthesizing final answer with Gemini...")
+        result = create_text_agent(system_prompt).run_sync(user_prompt)
+        return result.output.strip() or "No answer generated."
+
+    def _answer_from_summary_evidence(
+        self,
+        question: str,
+        summary_nodes: list[Node],
+    ) -> str:
+        state_ledger_arc_ids = self._state_ledger_arc_ids(question, self._raw_arc_ids(summary_nodes))
+        system_prompt = self._build_system_prompt(
+            state_ledger_arc_ids,
+            None,
+            context_kind="summary",
+        )
+        combined_context = "\n".join(self._build_summary_context_chunks(summary_nodes))
+
+        user_prompt = (
+            "Please answer the following question based ONLY on the retrieved context provided "
+            "below. The context may contain generated summaries rather than raw source text.\n\n"
+            "Every factual claim should cite one or more provided CITATION labels exactly as "
+            "written. Use the summary citation labels exactly as provided, including "
+            "summary_level. Do not invent scene labels for summary evidence.\n\n"
             f"QUESTION: {question}\n\n"
             f"CONTEXT:\n{combined_context}"
         )
@@ -1736,6 +1858,19 @@ class StoryQueryEngine:
             return f"{INSUFFICIENT_SOURCE_CONTEXT} Tool warning: {tool_warnings[0]}"
         return INSUFFICIENT_SOURCE_CONTEXT
 
+    def _routed_chosen_tool(self, stages: dict[StageName, StageTrace]) -> str | None:
+        router_stage = stages.get("router")
+        if router_stage is None:
+            return None
+        chosen_tool = router_stage.metadata.get("chosen_tool")
+        return chosen_tool if isinstance(chosen_tool, str) else None
+
+    def _answer_from_routed_evidence(self, question: str, routed: RoutedTraceResult) -> str:
+        chosen_tool = self._routed_chosen_tool(routed.stages)
+        if chosen_tool == "search_summaries":
+            return self._answer_from_summary_evidence(question, routed.nodes)
+        return self._answer_from_raw_evidence(question, routed.nodes, None)
+
     def retrieve_with_trace(
         self,
         question: str,
@@ -1753,7 +1888,7 @@ class StoryQueryEngine:
                 if routed.direct_answer is not None:
                     answer_text = routed.direct_answer
                 elif routed.nodes:
-                    answer_text = self._answer_from_raw_evidence(question, routed.nodes, None)
+                    answer_text = self._answer_from_routed_evidence(question, routed)
                 else:
                     answer_text = self._router_unavailable_message(routed.stages)
             return QueryTrace(
@@ -1799,8 +1934,11 @@ class StoryQueryEngine:
                 return routed.direct_answer
             if not routed.nodes:
                 return self._router_unavailable_message(routed.stages)
-            safe_print("Building answer context from routed source evidence...")
-            return self._answer_from_raw_evidence(question, routed.nodes, None)
+            if self._routed_chosen_tool(routed.stages) == "search_summaries":
+                safe_print("Building answer context from routed summary evidence...")
+            else:
+                safe_print("Building answer context from routed source evidence...")
+            return self._answer_from_routed_evidence(question, routed)
 
         safe_print("Searching raw source evidence...")
         analysis = None
