@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -75,6 +75,10 @@ def _raw_output(output: RouterOutput | None) -> dict[str, Any] | None:
     return output.model_dump(mode="json")
 
 
+def _validation_error_text(exc: ValidationError) -> str:
+    return str(exc)
+
+
 def validate_router_output(
     output: RouterOutput,
     *,
@@ -104,7 +108,7 @@ def validate_router_output(
             router_model=model_name,
             raw_output=raw_output,
             reason="invalid tool arguments",
-            validation_errors=[str(exc)],
+            validation_errors=[_validation_error_text(exc)],
         )
 
     return RouterDecision(
@@ -118,6 +122,7 @@ def validate_router_output(
     )
 
 
+@lru_cache(maxsize=1)
 def _tool_catalog() -> str:
     entries = []
     for spec in QUERY_TOOL_REGISTRY.values():
@@ -129,11 +134,6 @@ def _tool_catalog() -> str:
             }
         )
     return json.dumps(entries, ensure_ascii=False, indent=2)
-
-
-def _episode_number(episode_name: Any) -> int | None:
-    match = re.search(r"第(\d+)話", str(episode_name))
-    return int(match.group(1)) if match else None
 
 
 def _compressed_numbers(values: set[int]) -> str:
@@ -156,27 +156,25 @@ def _compressed_numbers(values: set[int]) -> str:
 
 
 def _story_location_catalog(engine: Any | None) -> str:
-    source_store = getattr(engine, "source_store", None)
-    iter_scenes = getattr(source_store, "iter_scenes", None)
-    if not callable(iter_scenes):
+    if engine is None:
         return "Available numbered episodes by arc are unavailable."
 
+    cached = getattr(engine, "_router_story_location_catalog", None)
+    if isinstance(cached, str):
+        return cached
+
+    source_store = engine.source_store
     episodes_by_arc: dict[tuple[str, str], set[int]] = {}
-    try:
-        scenes = iter_scenes()
-    except Exception as exc:
-        return f"Available numbered episodes by arc are unavailable: {exc}"
-    if not isinstance(scenes, list):
-        return "Available numbered episodes by arc are unavailable."
-
-    for scene in scenes:
+    for scene in source_store.iter_scenes():
         metadata = scene.get("metadata") if isinstance(scene, dict) else None
         if not isinstance(metadata, dict):
             continue
         arc_id = metadata.get("arc_id")
         story_type = metadata.get("story_type")
-        episode = _episode_number(metadata.get("episode_name"))
+        episode = metadata.get("episode_number")
         if not isinstance(arc_id, str) or not isinstance(story_type, str) or episode is None:
+            continue
+        if not isinstance(episode, int):
             continue
         episodes_by_arc.setdefault((arc_id, story_type), set()).add(episode)
 
@@ -194,7 +192,9 @@ def _story_location_catalog(engine: Any | None) -> str:
         "in this catalog. If the user asks for an unavailable episode, keep the original "
         "episode wording in query and use broader search_raw filters such as arc_id only."
     )
-    return "\n".join(lines)
+    catalog = "\n".join(lines)
+    setattr(engine, "_router_story_location_catalog", catalog)
+    return catalog
 
 
 def _router_instructions(engine: Any | None = None) -> str:
@@ -293,23 +293,31 @@ class QueryRouter:
         try:
             result = spec.dispatcher(engine, decision.validated_args)
         except Exception as exc:
+            first_error = str(exc)
             decision = _fallback_decision(
                 question,
                 final_top_k=final_top_k,
                 router_model=self.model_name,
                 raw_output=decision.raw_output,
                 reason="tool dispatch failure",
-                validation_errors=[*decision.validation_errors, str(exc)],
+                validation_errors=[*decision.validation_errors, first_error],
             )
             spec = QUERY_TOOL_REGISTRY[decision.tool_name]
-            result = spec.dispatcher(engine, decision.validated_args)
+            try:
+                result = spec.dispatcher(engine, decision.validated_args)
+            except Exception as fallback_exc:
+                return RouterDispatchResult(
+                    decision=decision,
+                    tool_result=ToolResult(
+                        errors=[
+                            f"fallback tool dispatch failed after {decision.fallback_reason}: "
+                            f"{fallback_exc}"
+                        ],
+                        metadata={"initial_dispatch_error": first_error},
+                    ),
+                )
 
-        if isinstance(result, ToolResult):
-            return RouterDispatchResult(decision=decision, tool_result=result)
-        return RouterDispatchResult(
-            decision=decision,
-            tool_result=ToolResult(metadata={"tool_output": result.model_dump(mode="json")}),
-        )
+        return RouterDispatchResult(decision=decision, tool_result=result)
 
 
 class FixtureQueryRouter(QueryRouter):

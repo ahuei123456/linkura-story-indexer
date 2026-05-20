@@ -95,10 +95,10 @@ def test_router_prompt_includes_available_episode_catalog() -> None:
     class FakeSourceStore:
         def iter_scenes(self) -> list[dict[str, Any]]:
             return [
-                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_name": "第1話"}},
-                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_name": "第2話"}},
-                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_name": "第4話"}},
-                {"metadata": {"arc_id": "105", "story_type": "Main", "episode_name": "第12話"}},
+                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_number": 1}},
+                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_number": 2}},
+                {"metadata": {"arc_id": "104", "story_type": "Main", "episode_number": 4}},
+                {"metadata": {"arc_id": "105", "story_type": "Main", "episode_number": 12}},
             ]
 
     engine.source_store = FakeSourceStore()
@@ -216,6 +216,68 @@ def test_llm_router_trace_records_router_metadata_and_final_candidates(
     assert trace.stages["router"].metadata["fallback_used"] is False
     assert trace.stages["final_top_k"].candidates is not None
     assert trace.stages["final_top_k"].candidates[0].text == "routed raw scene"
+
+
+def test_llm_router_returns_direct_glossary_answer() -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter("lookup_glossary", {"term": "日野下花帆"})
+
+    answer = engine.query("translate 日野下花帆")
+
+    assert answer.startswith("日野下花帆 translates to Kaho Hinoshita.")
+    assert "花帆" in answer
+
+    trace = engine.retrieve_with_trace("translate 日野下花帆", answer_mode=True)
+
+    assert trace.answer_text == answer
+    assert trace.stages["router"].metadata["chosen_tool"] == "lookup_glossary"
+
+
+def test_llm_router_surfaces_tool_errors_in_query_path() -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter(
+        "get_scene",
+        {"file_path": "missing.md", "scene_index": 0},
+    )
+
+    class FakeSourceStore:
+        def get_scene(self, file_path: str, scene_index: int) -> None:
+            return None
+
+    engine.source_store = FakeSourceStore()
+
+    answer = engine.query("show missing scene")
+
+    assert "Insufficient source context" in answer
+    assert "Tool error: scene not found" in answer
+
+
+def test_fallback_dispatch_failure_returns_tool_result_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = make_engine()
+    engine.query_router = FixtureQueryRouter(error=RuntimeError("model unavailable"))
+
+    def fail_retrieve_raw_nodes_with_trace(
+        question: str,
+        *,
+        where: dict[str, Any] | None = None,
+        top_k: int | None = None,
+        n_results: int | None = None,
+        analysis: Any = None,
+    ) -> RetrievalTraceResult:
+        raise RuntimeError("retrieval unavailable")
+
+    monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fail_retrieve_raw_nodes_with_trace)
+
+    result = engine.query_router.route_and_dispatch(engine, "original", final_top_k=5)
+
+    assert result.decision.fallback_used is True
+    assert result.tool_result.candidates == []
+    assert "fallback tool dispatch failed" in result.tool_result.errors[0]
+    assert "retrieval unavailable" in result.tool_result.errors[0]
 
 
 def test_fixture_router_falls_back_on_invalid_args_and_model_failure(

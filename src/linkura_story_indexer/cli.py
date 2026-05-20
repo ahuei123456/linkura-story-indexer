@@ -22,7 +22,7 @@ from .database import (
 )
 from .eval.io import load_eval_run, stable_json
 from .eval.metrics import diff_runs
-from .eval.models import EvalMode
+from .eval.models import ROUTING_MODES, EvalMode
 from .eval.runner import run_eval_from_file
 from .glossary_candidates import (
     DEFAULT_GLOSSARY_CANDIDATE_FILE,
@@ -465,8 +465,8 @@ def extract_glossary_candidates_command(
 
 
 def _routing_mode(value: str) -> EvalMode:
-    if value not in {"off", "heuristic", "llm_router"}:
-        raise typer.BadParameter("routing mode must be one of: off, heuristic, llm_router")
+    if value not in ROUTING_MODES:
+        raise typer.BadParameter(f"routing mode must be one of: {', '.join(ROUTING_MODES)}")
     return cast(EvalMode, value)
 
 

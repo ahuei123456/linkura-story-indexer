@@ -3,11 +3,12 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..console import safe_print
 from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
 from ..eval.models import (
+    ROUTING_MODES,
     CandidateScores,
     CandidateTrace,
     EvalMode,
@@ -27,6 +28,9 @@ from .analysis import (
     QueryAnalysis,
     analyze_query,
 )
+
+if TYPE_CHECKING:
+    from .router import QueryRouter
 
 ROUTING_CANDIDATE_COUNT = 20
 RAW_CANDIDATE_COUNT = 40
@@ -71,8 +75,8 @@ class RetrievalConfig:
             raise ValueError(f"final_top_k must be between {MIN_FINAL_TOP_K} and {MAX_FINAL_TOP_K}")
         if self.rrf_k < 1:
             raise ValueError("rrf_k must be at least 1")
-        if self.routing_mode not in {"off", "heuristic", "llm_router"}:
-            raise ValueError("routing_mode must be one of: off, heuristic, llm_router")
+        if self.routing_mode not in ROUTING_MODES:
+            raise ValueError(f"routing_mode must be one of: {', '.join(ROUTING_MODES)}")
 
 
 DEFAULT_RETRIEVAL_CONFIG = RetrievalConfig()
@@ -84,13 +88,20 @@ class RetrievalTraceResult:
     stages: dict[StageName, StageTrace]
 
 
+@dataclass(frozen=True)
+class RoutedTraceResult:
+    nodes: list[Node]
+    stages: dict[StageName, StageTrace]
+    direct_answer: str | None = None
+
+
 class StoryQueryEngine:
     def __init__(
         self,
         state_file: str = "world_state.json",
         glossary_file: str = "glossary.json",
         retrieval_config: RetrievalConfig | None = None,
-        query_router: Any | None = None,
+        query_router: "QueryRouter | None" = None,
     ):
         self.collection = get_chroma_collection()
         self.lexical_index = LexicalIndex()
@@ -1652,14 +1663,12 @@ class StoryQueryEngine:
         )
         return RetrievalTraceResult(nodes=summary_nodes, stages=stages)
 
-    def _get_query_router(self) -> Any:
-        router = getattr(self, "query_router", None)
-        if router is None:
+    def _get_query_router(self) -> "QueryRouter":
+        if self.query_router is None:
             from .router import QueryRouter
 
-            router = QueryRouter()
-            self.query_router = router
-        return router
+            self.query_router = QueryRouter()
+        return self.query_router
 
     def _trace_candidate_from_tool_candidate(
         self,
@@ -1676,7 +1685,7 @@ class StoryQueryEngine:
             source_span=candidate.source_identity,
         )
 
-    def _router_dispatch_with_trace(self, question: str) -> tuple[list[Node], dict[StageName, StageTrace]]:
+    def _router_dispatch_with_trace(self, question: str) -> RoutedTraceResult:
         dispatch = self._get_query_router().route_and_dispatch(
             self,
             question,
@@ -1695,7 +1704,7 @@ class StoryQueryEngine:
                 },
             )
         }
-        stages.update(tool_result.trace_stages)  # type: ignore[arg-type]
+        stages.update(tool_result.trace_stages)
 
         final_candidates = [
             self._trace_candidate_from_tool_candidate(candidate)
@@ -1709,31 +1718,52 @@ class StoryQueryEngine:
             for candidate in tool_result.candidates
             if candidate.metadata
         ]
-        return nodes, stages
+        direct_answer = tool_result.metadata.get("direct_answer")
+        return RoutedTraceResult(
+            nodes=nodes,
+            stages=stages,
+            direct_answer=direct_answer if isinstance(direct_answer, str) else None,
+        )
+
+    def _router_unavailable_message(self, stages: dict[StageName, StageTrace]) -> str:
+        router_stage = stages.get("router")
+        metadata = router_stage.metadata if router_stage is not None else {}
+        tool_errors = metadata.get("tool_errors")
+        if isinstance(tool_errors, list) and tool_errors:
+            return f"{INSUFFICIENT_SOURCE_CONTEXT} Tool error: {tool_errors[0]}"
+        tool_warnings = metadata.get("tool_warnings")
+        if isinstance(tool_warnings, list) and tool_warnings:
+            return f"{INSUFFICIENT_SOURCE_CONTEXT} Tool warning: {tool_warnings[0]}"
+        return INSUFFICIENT_SOURCE_CONTEXT
 
     def retrieve_with_trace(
         self,
         question: str,
         *,
         query_id: str = "ad-hoc",
-        mode: EvalMode = "off",
+        mode: EvalMode | None = None,
         answer_mode: bool = False,
     ) -> QueryTrace:
         """Executes the raw-first retrieval flow and returns deterministic stage traces."""
-        effective_mode: EvalMode = mode if mode != "off" else self._config().routing_mode
+        effective_mode: EvalMode = mode if mode is not None else self._config().routing_mode
         if effective_mode == "llm_router":
-            final_nodes, stages = self._router_dispatch_with_trace(question)
+            routed = self._router_dispatch_with_trace(question)
             answer_text = None
-            if answer_mode and final_nodes:
-                answer_text = self._answer_from_raw_evidence(question, final_nodes, None)
+            if answer_mode:
+                if routed.direct_answer is not None:
+                    answer_text = routed.direct_answer
+                elif routed.nodes:
+                    answer_text = self._answer_from_raw_evidence(question, routed.nodes, None)
+                else:
+                    answer_text = self._router_unavailable_message(routed.stages)
             return QueryTrace(
                 query_id=query_id,
                 question=question,
                 mode=effective_mode,
                 config=self._config().__dict__,
-                stages=stages,
+                stages=routed.stages,
                 final_citation_labels=[
-                    self._citation_label(metadata) for _, metadata in final_nodes
+                    self._citation_label(metadata) for _, metadata in routed.nodes
                 ],
                 answer_text=answer_text,
             )
@@ -1764,11 +1794,13 @@ class StoryQueryEngine:
         """Executes the raw-first RAG query flow."""
         if self._config().routing_mode == "llm_router":
             safe_print("Routing query to a typed retrieval tool...")
-            final_nodes, _ = self._router_dispatch_with_trace(question)
-            if not final_nodes:
-                return INSUFFICIENT_SOURCE_CONTEXT
+            routed = self._router_dispatch_with_trace(question)
+            if routed.direct_answer is not None:
+                return routed.direct_answer
+            if not routed.nodes:
+                return self._router_unavailable_message(routed.stages)
             safe_print("Building answer context from routed source evidence...")
-            return self._answer_from_raw_evidence(question, final_nodes, None)
+            return self._answer_from_raw_evidence(question, routed.nodes, None)
 
         safe_print("Searching raw source evidence...")
         analysis = None

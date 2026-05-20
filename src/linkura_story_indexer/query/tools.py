@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import FunctionToolset
 
-from linkura_story_indexer.eval.models import SourceIdentity, StageTrace
+from linkura_story_indexer.eval.models import SourceIdentity, StageName, StageTrace
 from linkura_story_indexer.lexical import glossary_aliases_for
 from linkura_story_indexer.query.engine import Node, StoryQueryEngine
 
@@ -65,7 +65,7 @@ class ToolCandidate(BaseModel):
 
 class ToolResult(BaseModel):
     candidates: list[ToolCandidate] = Field(default_factory=list)
-    trace_stages: dict[str, StageTrace] = Field(default_factory=dict)
+    trace_stages: dict[StageName, StageTrace] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -80,7 +80,7 @@ class GlossaryLookupResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-QueryToolDispatcher = Callable[[StoryQueryEngine, BaseModel], BaseModel]
+QueryToolDispatcher = Callable[[StoryQueryEngine, BaseModel], ToolResult]
 
 
 @dataclass(frozen=True)
@@ -173,8 +173,8 @@ def _summary_where(engine: StoryQueryEngine, args: SearchSummariesInput) -> dict
     return engine._and_where(filters)
 
 
-def _public_trace_stages(stages: dict[Any, StageTrace]) -> dict[str, StageTrace]:
-    return {str(name): stage for name, stage in stages.items()}
+def _public_trace_stages(stages: dict[StageName, StageTrace]) -> dict[StageName, StageTrace]:
+    return stages
 
 
 def search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
@@ -343,8 +343,26 @@ def _dispatch_get_scene(engine: StoryQueryEngine, args: BaseModel) -> ToolResult
     return get_scene(engine, cast(GetSceneInput, args))
 
 
-def _dispatch_lookup_glossary(engine: StoryQueryEngine, args: BaseModel) -> GlossaryLookupResult:
-    return lookup_glossary(engine, cast(LookupGlossaryInput, args))
+def _glossary_direct_answer(result: GlossaryLookupResult, term: str) -> str:
+    if result.errors:
+        return result.errors[0]
+    if result.canonical_term is None or result.translation is None:
+        return f"Glossary term not found: {term}"
+    aliases = ", ".join(result.aliases)
+    suffix = f" Aliases: {aliases}." if aliases else ""
+    return f"{result.canonical_term} translates to {result.translation}.{suffix}"
+
+
+def _dispatch_lookup_glossary(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    typed_args = cast(LookupGlossaryInput, args)
+    result = lookup_glossary(engine, typed_args)
+    return ToolResult(
+        errors=result.errors,
+        metadata={
+            "tool_output": result.model_dump(mode="json"),
+            "direct_answer": _glossary_direct_answer(result, typed_args.term),
+        },
+    )
 
 
 QUERY_TOOL_REGISTRY: dict[str, QueryToolSpec] = {
