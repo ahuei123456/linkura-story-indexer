@@ -22,7 +22,7 @@ from .database import (
 )
 from .eval.io import load_eval_run, stable_json
 from .eval.metrics import diff_runs
-from .eval.models import EvalMode
+from .eval.models import ROUTING_MODES, EvalMode
 from .eval.runner import run_eval_from_file
 from .glossary_candidates import (
     DEFAULT_GLOSSARY_CANDIDATE_FILE,
@@ -55,7 +55,7 @@ from .indexer.source_store import SourceRecordStore
 from .indexer.summarizer import SUMMARIZATION_PROMPT_VERSION, HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
 from .models.story import StoryNode
-from .query.engine import RetrievalConfig, StoryQueryEngine
+from .query.engine import INSUFFICIENT_SOURCE_CONTEXT, RetrievalConfig, StoryQueryEngine
 from .story_order import StoryOrder, default_story_order, load_story_order
 from .summary_export import (
     DEFAULT_PRODUCTION_READER_SOURCE,
@@ -68,6 +68,42 @@ app = typer.Typer()
 eval_app = typer.Typer(help="Run and compare retrieval evaluation harness outputs.")
 app.add_typer(eval_app, name="eval")
 console = Console()
+
+
+def _router_debug_lines(metadata: dict[str, Any]) -> list[str]:
+    fields = [
+        ("model", metadata.get("router_model")),
+        ("chosen_tool", metadata.get("chosen_tool")),
+        (
+            "args",
+            json.dumps(metadata.get("validated_args", {}), ensure_ascii=False, sort_keys=True),
+        ),
+        ("fallback_used", metadata.get("fallback_used")),
+        ("fallback_reason", metadata.get("fallback_reason")),
+    ]
+    lines = ["[bold cyan]Router:[/bold cyan]"]
+    lines.extend(f"  {name}: {value}" for name, value in fields)
+    validation_errors = metadata.get("validation_errors")
+    if validation_errors:
+        lines.append(
+            "  validation_errors: "
+            + json.dumps(validation_errors, ensure_ascii=False, sort_keys=True)
+        )
+    raw_output = metadata.get("raw_structured_model_output")
+    if raw_output is not None:
+        lines.append(
+            "  raw_output: " + json.dumps(raw_output, ensure_ascii=False, sort_keys=True)
+        )
+    return lines
+
+
+def _print_router_debug(engine: StoryQueryEngine, question: str) -> str:
+    trace = engine.retrieve_with_trace(question, answer_mode=True)
+    router_stage = trace.stages.get("router")
+    if router_stage is not None:
+        for line in _router_debug_lines(router_stage.metadata):
+            console.print(line)
+    return trace.answer_text or INSUFFICIENT_SOURCE_CONTEXT
 
 
 def _node_id(node: StoryNode) -> str:
@@ -305,30 +341,47 @@ def hello():
 @app.command()
 def query(
     question: str,
-    analyze: bool = typer.Option(
+    routing_mode: str = typer.Option(
+        "off",
+        "--routing-mode",
+        help="Routing mode: off, heuristic, or llm_router.",
+    ),
+    show_router: bool = typer.Option(
         False,
-        "--analyze/--no-analyze",
-        help="Enable analyzer-derived filters and structured query helpers.",
+        "--show-router/--hide-router",
+        help="Print the llm_router structured decision and validation metadata.",
     ),
 ):
     """Answers a question based on the RAG index and State Ledger."""
+    mode = _routing_mode(routing_mode)
     initialize_settings()
-    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(enable_query_analysis=analyze))
+    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
     console.print(f"\n[bold blue]Question:[/bold blue] {question}")
-    answer = engine.query(question)
+    if show_router and mode == "llm_router":
+        answer = _print_router_debug(engine, question)
+    else:
+        if show_router:
+            console.print("[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]")
+        answer = engine.query(question)
     console.print(f"\n[bold green]Answer:[/bold green]\n{answer}\n")
 
 @app.command()
 def chat(
-    analyze: bool = typer.Option(
+    routing_mode: str = typer.Option(
+        "off",
+        "--routing-mode",
+        help="Routing mode: off, heuristic, or llm_router.",
+    ),
+    show_router: bool = typer.Option(
         False,
-        "--analyze/--no-analyze",
-        help="Enable analyzer-derived filters and structured query helpers.",
+        "--show-router/--hide-router",
+        help="Print the llm_router structured decision and validation metadata for each turn.",
     ),
 ):
     """Starts an interactive chat session with the RAG index."""
+    mode = _routing_mode(routing_mode)
     initialize_settings()
-    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(enable_query_analysis=analyze))
+    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
     console.print("[bold green]Interactive Chat Started! Type 'exit' or 'quit' to end.[/bold green]")
     
     while True:
@@ -340,7 +393,12 @@ def chat(
                 continue
                 
             console.print("\n[dim]Thinking...[/dim]")
-            answer = engine.query(question)
+            if show_router and mode == "llm_router":
+                answer = _print_router_debug(engine, question)
+            else:
+                if show_router:
+                    console.print("[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]")
+                answer = engine.query(question)
             console.print(f"\n[bold green]Answer:[/bold green]\n{answer}\n")
         except (KeyboardInterrupt, EOFError):
             break
@@ -406,9 +464,9 @@ def extract_glossary_candidates_command(
         console.print(f"By category: {count_summary}")
 
 
-def _eval_mode(value: str) -> EvalMode:
-    if value not in {"raw", "raw-analyze", "raw-rerank"}:
-        raise typer.BadParameter("mode must be one of: raw, raw-analyze, raw-rerank")
+def _routing_mode(value: str) -> EvalMode:
+    if value not in ROUTING_MODES:
+        raise typer.BadParameter(f"routing mode must be one of: {', '.join(ROUTING_MODES)}")
     return cast(EvalMode, value)
 
 
@@ -419,10 +477,10 @@ def eval_run_command(
         "--golden-set",
         help="Path to the golden question set JSON.",
     ),
-    mode: str = typer.Option(
-        "raw",
-        "--mode",
-        help="Evaluation mode: raw, raw-analyze, or raw-rerank.",
+    routing_mode: str = typer.Option(
+        "off",
+        "--routing-mode",
+        help="Routing mode: off, heuristic, or llm_router.",
     ),
     output: str | None = typer.Option(
         None,
@@ -449,7 +507,7 @@ def eval_run_command(
     try:
         run = run_eval_from_file(
             golden_set,
-            mode=_eval_mode(mode),
+            mode=_routing_mode(routing_mode),
             output_path=output,
             inspect_query_id=inspect_query_id,
             dump_traces_dir=dump_traces_dir,

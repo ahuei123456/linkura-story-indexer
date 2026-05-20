@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import FunctionToolset
 
-from linkura_story_indexer.eval.models import SourceIdentity, StageTrace
+from linkura_story_indexer.eval.models import SourceIdentity, StageName, StageTrace
 from linkura_story_indexer.lexical import glossary_aliases_for
 from linkura_story_indexer.query.engine import Node, StoryQueryEngine
 
@@ -64,7 +65,7 @@ class ToolCandidate(BaseModel):
 
 class ToolResult(BaseModel):
     candidates: list[ToolCandidate] = Field(default_factory=list)
-    trace_stages: dict[str, StageTrace] = Field(default_factory=dict)
+    trace_stages: dict[StageName, StageTrace] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -77,6 +78,17 @@ class GlossaryLookupResult(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     match_type: Literal["canonical", "translation", "alias", "miss"] = "miss"
     errors: list[str] = Field(default_factory=list)
+
+
+QueryToolDispatcher = Callable[[StoryQueryEngine, BaseModel], ToolResult]
+
+
+@dataclass(frozen=True)
+class QueryToolSpec:
+    name: str
+    input_model: type[BaseModel]
+    dispatcher: QueryToolDispatcher
+    description: str
 
 
 def _candidate_from_node(
@@ -161,10 +173,6 @@ def _summary_where(engine: StoryQueryEngine, args: SearchSummariesInput) -> dict
     return engine._and_where(filters)
 
 
-def _public_trace_stages(stages: dict[Any, StageTrace]) -> dict[str, StageTrace]:
-    return {str(name): stage for name, stage in stages.items()}
-
-
 def search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
     where, warnings, empty = _raw_where(engine, args)
     if empty:
@@ -182,7 +190,7 @@ def search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
             _candidate_from_node(engine, node, rank=rank, fetch_raw_text=True)
             for rank, node in enumerate(retrieval.nodes, start=1)
         ],
-        trace_stages=_public_trace_stages(retrieval.stages),
+        trace_stages=retrieval.stages,
         warnings=warnings,
         metadata={"where": where},
     )
@@ -203,7 +211,7 @@ def search_summaries(engine: StoryQueryEngine, args: SearchSummariesInput) -> To
             _candidate_from_node(engine, node, rank=rank)
             for rank, node in enumerate(summary_nodes, start=1)
         ],
-        trace_stages=_public_trace_stages(retrieval.stages),
+        trace_stages=retrieval.stages,
         metadata={"where": where},
     )
 
@@ -317,3 +325,74 @@ def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
     toolset.add_function(get_scene_tool, name="get_scene")
     toolset.add_function(lookup_glossary_tool, name="lookup_glossary")
     return toolset
+
+
+def _dispatch_search_raw(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return search_raw(engine, cast(SearchRawInput, args))
+
+
+def _dispatch_search_summaries(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return search_summaries(engine, cast(SearchSummariesInput, args))
+
+
+def _dispatch_get_scene(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return get_scene(engine, cast(GetSceneInput, args))
+
+
+def _glossary_direct_answer(result: GlossaryLookupResult, term: str) -> str:
+    if result.errors:
+        return result.errors[0]
+    if result.canonical_term is None or result.translation is None:
+        return f"Glossary term not found: {term}"
+    aliases = ", ".join(result.aliases)
+    suffix = f" Aliases: {aliases}." if aliases else ""
+    return f"{result.canonical_term} translates to {result.translation}.{suffix}"
+
+
+def _dispatch_lookup_glossary(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    typed_args = cast(LookupGlossaryInput, args)
+    result = lookup_glossary(engine, typed_args)
+    return ToolResult(
+        errors=result.errors,
+        metadata={
+            "tool_output": result.model_dump(mode="json"),
+            "direct_answer": _glossary_direct_answer(result, typed_args.term),
+        },
+    )
+
+
+QUERY_TOOL_REGISTRY: dict[str, QueryToolSpec] = {
+    "search_raw": QueryToolSpec(
+        name="search_raw",
+        input_model=SearchRawInput,
+        dispatcher=_dispatch_search_raw,
+        description=(
+            "Search raw source scenes for exact evidence, dialogue, scene-level details, "
+            "and citation-backed answers."
+        ),
+    ),
+    "search_summaries": QueryToolSpec(
+        name="search_summaries",
+        input_model=SearchSummariesInput,
+        dispatcher=_dispatch_search_summaries,
+        description=(
+            "Search year, episode, or part summaries for broad narrative context rather "
+            "than exact source evidence."
+        ),
+    ),
+    "get_scene": QueryToolSpec(
+        name="get_scene",
+        input_model=GetSceneInput,
+        dispatcher=_dispatch_get_scene,
+        description="Fetch one exact raw source scene by file path and zero-based scene index.",
+    ),
+    "lookup_glossary": QueryToolSpec(
+        name="lookup_glossary",
+        input_model=LookupGlossaryInput,
+        dispatcher=_dispatch_lookup_glossary,
+        description=(
+            "Resolve a Japanese glossary term, English translation, or generated alias "
+            "without performing source retrieval."
+        ),
+    ),
+}

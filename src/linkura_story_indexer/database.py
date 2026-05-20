@@ -14,6 +14,7 @@ from pydantic_ai.providers.google import GoogleProvider
 load_dotenv()
 
 DEFAULT_CHAT_MODEL = "gemini-3-flash-preview"
+DEFAULT_ROUTER_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_GENERATION_PROVIDER = "google"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 DEFAULT_CHROMA_DB_PATH = "./chroma_db"
@@ -61,6 +62,10 @@ def get_generation_provider_name() -> str:
 
 def get_generation_model_name() -> str:
     return os.getenv("LINKURA_INGEST_MODEL") or get_chat_model_name()
+
+
+def get_router_model_name() -> str:
+    return os.getenv("LINKURA_ROUTER_MODEL", DEFAULT_ROUTER_MODEL)
 
 
 def get_embedding_model_name() -> str:

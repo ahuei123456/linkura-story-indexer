@@ -444,7 +444,7 @@ def test_query_default_expands_ranks_and_synthesizes_raw_evidence(monkeypatch):
 
 def test_query_analysis_enabled_applies_analyzer_filters(monkeypatch):
     engine = make_engine()
-    engine.retrieval_config = RetrievalConfig(enable_query_analysis=True, neighbor_scene_window=0)
+    engine.retrieval_config = RetrievalConfig(routing_mode="heuristic", neighbor_scene_window=0)
     raw_hit = raw_node("花帆: scoped raw scene", scene_start=4)
     raw_hit[1]["arc_id"] = "105"
     calls: list[dict[str, Any]] = []

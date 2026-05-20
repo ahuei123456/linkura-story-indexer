@@ -30,19 +30,22 @@ path retrieves raw source evidence with `summary_level: 4`, does not add
 analyzer-derived metadata filters, and does not perform summary-tier retrieval
 or summary fanout.
 
-Use `--analyze` when you want targeted scoped workflows that apply
-analyzer-derived filters or structured helpers:
+Use `--routing-mode heuristic` when you want targeted scoped workflows that
+apply analyzer-derived filters or structured helpers. Use
+`--routing-mode llm_router` to let the configured router model select one
+typed query tool before retrieval. The router model is controlled by
+`LINKURA_ROUTER_MODEL` and defaults to `gemini-3.1-flash-lite-preview`.
 
 ```powershell
-indexer query "What happened in the 105th term?" --analyze
-indexer chat --analyze
+indexer query "What happened in the 105th term?" --routing-mode heuristic
+indexer chat --routing-mode llm_router
 ```
 
-Use `--no-analyze` to make the default explicit:
+Use `--routing-mode off` to make the default explicit:
 
 ```powershell
-indexer query "What happened in the 105th term?" --no-analyze
-indexer chat --no-analyze
+indexer query "What happened in the 105th term?" --routing-mode off
+indexer chat --routing-mode off
 ```
 
 ## Retrieval Evaluation
@@ -50,12 +53,12 @@ indexer chat --no-analyze
 Run the checked-in retrieval golden set without answer generation:
 
 ```powershell
-uv run indexer eval run --golden-set eval/golden_questions.json --mode raw --output runs/baseline.json
+uv run indexer eval run --golden-set eval/golden_questions.json --routing-mode off --output runs/baseline.json
 ```
 
-Use `--mode raw-analyze` to compare analyzer-derived filters, or
-`--mode raw-rerank` to exercise the placeholder reranker metric surface. Until
-the reranker lands, reranker metrics are emitted as unavailable.
+Use `--routing-mode heuristic` to compare analyzer-derived filters, or
+`--routing-mode llm_router` to evaluate typed router dispatch. Until the
+reranker lands, reranker metrics are emitted as unavailable.
 
 ## Index Rebuilds
 

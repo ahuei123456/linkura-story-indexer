@@ -12,6 +12,7 @@ from linkura_story_indexer.indexer.source_store import SourceRecordStore
 from linkura_story_indexer.query import engine as query_engine
 from linkura_story_indexer.query.engine import RetrievalConfig, StoryQueryEngine
 from linkura_story_indexer.query.tools import (
+    QUERY_TOOL_REGISTRY,
     GetSceneInput,
     LookupGlossaryInput,
     SearchRawInput,
@@ -268,3 +269,5 @@ def test_build_query_toolset_registers_pydantic_schema_tools() -> None:
     )
     assert search_raw_schema["properties"]["top_k"]["minimum"] == 1
     assert "OR semantics" in search_raw_schema["properties"]["speakers"]["description"]
+    assert set(QUERY_TOOL_REGISTRY) == set(by_name)
+    assert QUERY_TOOL_REGISTRY["search_raw"].input_model is SearchRawInput

@@ -8,24 +8,28 @@ def test_model_and_chroma_env_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("LINKURA_CHAT_MODEL", raising=False)
     monkeypatch.delenv("LINKURA_INGEST_PROVIDER", raising=False)
     monkeypatch.delenv("LINKURA_INGEST_MODEL", raising=False)
+    monkeypatch.delenv("LINKURA_ROUTER_MODEL", raising=False)
     monkeypatch.delenv("LINKURA_EMBEDDING_MODEL", raising=False)
     monkeypatch.delenv("LINKURA_CHROMA_DB_PATH", raising=False)
 
     assert database.get_chat_model_name() == database.DEFAULT_CHAT_MODEL
     assert database.get_generation_provider_name() == database.DEFAULT_GENERATION_PROVIDER
     assert database.get_generation_model_name() == database.DEFAULT_CHAT_MODEL
+    assert database.get_router_model_name() == database.DEFAULT_ROUTER_MODEL
     assert database.get_embedding_model_name() == database.DEFAULT_EMBEDDING_MODEL
     assert database.get_chroma_db_path() == database.DEFAULT_CHROMA_DB_PATH
 
     monkeypatch.setenv("LINKURA_CHAT_MODEL", "custom-chat")
     monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
     monkeypatch.setenv("LINKURA_INGEST_MODEL", "custom-ingest")
+    monkeypatch.setenv("LINKURA_ROUTER_MODEL", "custom-router")
     monkeypatch.setenv("LINKURA_EMBEDDING_MODEL", "custom-embedding")
     monkeypatch.setenv("LINKURA_CHROMA_DB_PATH", "./custom_chroma")
 
     assert database.get_chat_model_name() == "custom-chat"
     assert database.get_generation_provider_name() == "openai"
     assert database.get_generation_model_name() == "custom-ingest"
+    assert database.get_router_model_name() == "custom-router"
     assert database.get_embedding_model_name() == "custom-embedding"
     assert database.get_chroma_db_path() == "./custom_chroma"
 

@@ -1,8 +1,10 @@
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
-EvalMode = Literal["raw", "raw-analyze", "raw-rerank"]
+RoutingMode = Literal["off", "heuristic", "llm_router"]
+EvalMode = RoutingMode
+ROUTING_MODES = cast(tuple[RoutingMode, ...], get_args(RoutingMode))
 CandidateKind = Literal["raw_span", "summary", "summary_section", "reranker"]
 StageName = Literal[
     "dense_raw",
@@ -15,6 +17,7 @@ StageName = Literal[
     "deterministic_ranking",
     "final_top_k",
     "reranker",
+    "router",
 ]
 NeighborProvenance = Literal["direct_hit", "neighbor_of"]
 
@@ -75,7 +78,7 @@ class GoldenSet(BaseModel):
 
 
 class RunConfig(BaseModel):
-    mode: EvalMode = "raw"
+    mode: EvalMode = "off"
     golden_set: str
     top_k: int = 8
     answer_mode: bool = False
@@ -108,12 +111,13 @@ class StageTrace(BaseModel):
     name: StageName
     candidates: list[CandidateTrace] | None = None
     unavailable_reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryTrace(BaseModel):
     query_id: str
     question: str
-    mode: EvalMode = "raw"
+    mode: EvalMode = "off"
     config: dict[str, Any] = Field(default_factory=dict)
     stages: dict[StageName, StageTrace]
     final_citation_labels: list[str] = Field(default_factory=list)
