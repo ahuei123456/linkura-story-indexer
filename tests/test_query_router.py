@@ -60,9 +60,14 @@ def test_router_output_accepts_structured_tool_selection() -> None:
 def test_router_prompt_guides_story_locations_to_filtered_raw_search() -> None:
     instructions = _router_instructions()
 
-    assert "'104th term', '104 term', or 'Year 104' map to arc_id='104'" in instructions
+    assert "any 3-digit cardinal or ordinal term, year, or arc phrase" in instructions
+    assert "'103rd term' -> arc_id='103'" in instructions
+    assert "'104 term' -> arc_id='104'" in instructions
+    assert "'Year 105' -> arc_id='105'" in instructions
     assert "'episode 1', 'ep 1', or '第1話' map to episode=1" in instructions
     assert "use search_raw with arc_id and episode filters" in instructions
+    assert "what happened in episode 13 of the 103rd term" in instructions
+    assert "args={'query':'what happened','arc_id':'103','episode':13,'top_k':8}" in instructions
     assert "how did Kosuzu join the school idol club" in instructions
 
 
