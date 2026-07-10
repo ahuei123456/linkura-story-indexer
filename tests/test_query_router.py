@@ -326,6 +326,65 @@ def test_llm_router_returns_direct_glossary_answer() -> None:
     assert trace.stages["router"].metadata["chosen_tool"] == "lookup_glossary"
 
 
+def test_stream_query_returns_direct_glossary_answer_with_router_metadata() -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter("lookup_glossary", {"term": "日野下花帆"})
+
+    result = engine.stream_query("translate 日野下花帆")
+
+    deltas = list(result.answer_deltas)
+    assert len(deltas) == 1
+    assert deltas[0].startswith("日野下花帆 translates to Kaho Hinoshita.")
+    assert "花帆" in deltas[0]
+    assert result.router_metadata is not None
+    assert result.router_metadata["chosen_tool"] == "lookup_glossary"
+
+
+def test_stream_query_synthesizes_routed_summary_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter(
+        "search_summaries",
+        {"query": "routed summary query", "top_k": 1, "summary_level": 1},
+    )
+    prompts: list[str] = []
+
+    class FakeStreamResult:
+        def stream_text(self, *, delta: bool, debounce_by: float) -> Any:
+            assert delta is True
+            assert debounce_by == 0.1
+            return iter(["summary ", "answer"])
+
+    class FakeAgent:
+        def run_stream_sync(self, prompt: str) -> FakeStreamResult:
+            prompts.append(prompt)
+            return FakeStreamResult()
+
+    def fake_retrieve_summary_nodes_with_trace(
+        question: str,
+        *,
+        where: dict[str, Any] | None,
+        top_k: int,
+    ) -> RetrievalTraceResult:
+        return RetrievalTraceResult(nodes=[summary_node("summary evidence")], stages={})
+
+    monkeypatch.setattr(
+        engine,
+        "retrieve_summary_nodes_with_trace",
+        fake_retrieve_summary_nodes_with_trace,
+    )
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+
+    result = engine.stream_query("original")
+
+    assert list(result.answer_deltas) == ["summary", " answer"]
+    assert result.router_metadata is not None
+    assert result.router_metadata["chosen_tool"] == "search_summaries"
+    assert "SUMMARY EVIDENCE 1" in prompts[0]
+    assert "GENERATED SUMMARY TEXT" in prompts[0]
+
+
 def test_llm_router_surfaces_tool_errors_in_query_path() -> None:
     engine = make_engine()
     engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
@@ -344,6 +403,28 @@ def test_llm_router_surfaces_tool_errors_in_query_path() -> None:
 
     assert "Insufficient source context" in answer
     assert "Tool error: scene not found" in answer
+
+
+def test_stream_query_surfaces_routed_retrieval_errors_as_one_chunk() -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter(
+        "get_scene",
+        {"file_path": "missing.md", "scene_index": 0},
+    )
+
+    class FakeSourceStore:
+        def get_scene(self, file_path: str, scene_index: int) -> None:
+            return None
+
+    engine.source_store = FakeSourceStore()
+
+    result = engine.stream_query("show missing scene")
+    deltas = list(result.answer_deltas)
+
+    assert len(deltas) == 1
+    assert "Insufficient source context" in deltas[0]
+    assert "Tool error: scene not found" in deltas[0]
 
 
 def test_fallback_dispatch_failure_returns_tool_result_error(
@@ -403,3 +484,4 @@ def test_fixture_router_falls_back_on_invalid_args_and_model_failure(
     assert failure_result.decision.fallback_used is True
     assert failure_result.decision.fallback_reason == "router model failure"
     assert captured == ["original:5", "original:5"]
+

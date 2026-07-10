@@ -101,9 +101,13 @@ def _print_router_debug(engine: StoryQueryEngine, question: str) -> str:
     trace = engine.retrieve_with_trace(question, answer_mode=True)
     router_stage = trace.stages.get("router")
     if router_stage is not None:
-        for line in _router_debug_lines(router_stage.metadata):
-            console.print(line)
+        _print_router_metadata(router_stage.metadata)
     return trace.answer_text or INSUFFICIENT_SOURCE_CONTEXT
+
+
+def _print_router_metadata(metadata: dict[str, Any]) -> None:
+    for line in _router_debug_lines(metadata):
+        console.print(line)
 
 
 def _node_id(node: StoryNode) -> str:
@@ -383,26 +387,39 @@ def chat(
     initialize_query_settings()
     engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
     console.print("[bold green]Interactive Chat Started! Type 'exit' or 'quit' to end.[/bold green]")
-    
+
     while True:
         try:
             question = typer.prompt("Question")
-            if question.strip().lower() in ["exit", "quit"]:
-                break
-            if not question.strip():
-                continue
-                
-            console.print("\n[dim]Thinking...[/dim]")
-            if show_router and mode == "llm_router":
-                answer = _print_router_debug(engine, question)
-            else:
-                if show_router:
-                    console.print("[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]")
-                answer = engine.query(question)
-            console.print(f"\n[bold green]Answer:[/bold green]\n{answer}\n")
         except (KeyboardInterrupt, EOFError):
             break
-            
+
+        if question.strip().lower() in ["exit", "quit"]:
+            break
+        if not question.strip():
+            continue
+
+        answer_deltas = None
+        try:
+            console.print("\n[dim]Thinking...[/dim]")
+            result = engine.stream_query(question)
+            answer_deltas = result.answer_deltas
+            if show_router and mode == "llm_router" and result.router_metadata is not None:
+                _print_router_metadata(result.router_metadata)
+            elif show_router:
+                console.print(
+                    "[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]"
+                )
+            console.print("\n[bold green]Answer:[/bold green]")
+            for delta in answer_deltas:
+                console.print(delta, end="", markup=False, highlight=True)
+            console.print()
+        except KeyboardInterrupt:
+            close = getattr(answer_deltas, "close", None)
+            if close is not None:
+                close()
+            console.print("\n[yellow]Answer interrupted. Ready for another question.[/yellow]\n")
+
     console.print("[bold blue]Chat session ended. Goodbye![/bold blue]")
 
 @app.command()
@@ -717,3 +734,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -205,7 +205,7 @@ retrieval — don't start until Phases 1-5 are solid.
 
 ## Misc low-priority polish
 
-- [ ] Streaming for `cli.chat` instead of blocking `run_sync`.
+- [x] Streaming for `cli.chat` instead of blocking `run_sync`.
 - [ ] Migrate `summaries_cache.json` to SQLite or JSONL — **only
       after** content-hash invalidation and stale-vector pruning
       land. Format migration alone fixes nothing.
@@ -215,3 +215,4 @@ retrieval — don't start until Phases 1-5 are solid.
 Task 1 is the natural starting point: entirely local edits, no new
 concepts, gets the system prompt to stop lying while Tier 4 indexing
 is being built.
+

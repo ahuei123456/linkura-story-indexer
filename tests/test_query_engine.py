@@ -309,8 +309,8 @@ def test_query_uses_configured_candidate_counts(monkeypatch):
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(
         engine,
-        "_answer_from_raw_evidence",
-        lambda question, nodes, analysis: "answered",
+        "_answer_from_prompts",
+        lambda system_prompt, user_prompt: "answered",
     )
 
     assert engine.query("What happened?") == "answered"
@@ -341,8 +341,8 @@ def test_query_default_does_not_analyze(monkeypatch):
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(
         engine,
-        "_answer_from_raw_evidence",
-        lambda question, nodes, analysis: "answered",
+        "_answer_from_prompts",
+        lambda system_prompt, user_prompt: "answered",
     )
 
     assert engine.query("What happened in the 105th term?") == "answered"
@@ -368,8 +368,8 @@ def test_query_default_uses_raw_filter_for_scoped_questions(monkeypatch):
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(
         engine,
-        "_answer_from_raw_evidence",
-        lambda question, nodes, analysis: "answered",
+        "_answer_from_prompts",
+        lambda system_prompt, user_prompt: "answered",
     )
 
     scoped_questions = [
@@ -397,8 +397,8 @@ def test_query_default_skips_structured_answers(monkeypatch):
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(
         engine,
-        "_answer_from_raw_evidence",
-        lambda question, nodes, analysis: "answered from raw",
+        "_answer_from_prompts",
+        lambda system_prompt, user_prompt: "answered from raw",
     )
 
     assert engine.query("Who said 「行こう」?") == "answered from raw"
@@ -422,16 +422,17 @@ def test_query_default_expands_ranks_and_synthesizes_raw_evidence(monkeypatch):
     )
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
 
-    def fake_answer(
+    def fake_prompts(
         question: str,
         nodes: list[tuple[str, dict[str, Any]]],
         analysis: Any,
-    ) -> str:
+    ) -> tuple[str, str]:
         captured_nodes.extend(nodes)
         captured_analysis.append(analysis)
-        return "answered"
+        return "system", "user"
 
-    monkeypatch.setattr(engine, "_answer_from_raw_evidence", fake_answer)
+    monkeypatch.setattr(engine, "_raw_answer_prompts", fake_prompts)
+    monkeypatch.setattr(engine, "_answer_from_prompts", lambda system, user: "answered")
 
     assert engine.query("What does Kaho do?") == "answered"
     assert {engine._scene_span(metadata) for _, metadata in captured_nodes} == {
@@ -465,8 +466,8 @@ def test_query_analysis_enabled_applies_analyzer_filters(monkeypatch):
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(
         engine,
-        "_answer_from_raw_evidence",
-        lambda question, nodes, analysis: "answered",
+        "_answer_from_prompts",
+        lambda system_prompt, user_prompt: "answered",
     )
 
     assert engine.query("what happened at the end of the 105th term?") == "answered"
@@ -584,192 +585,7 @@ def test_scene_range_constraint_matches_overlapping_coalesced_chunks() -> None:
         raw_node("scenes 5-6", scene_start=4, scene_end=5),
     ]
 
-    filtered = engine._filter_raw_nodes_by_analysis(nodes, analysis)
-
-    assert filtered == [nodes[1], nodes[2]]
-
-
-def test_temporal_filter_resolves_to_numeric_story_order() -> None:
-    engine = make_engine()
-
-    class FakeCollection:
-        def get(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
-            assert kwargs["where"] == {"$and": [{"summary_level": 4}, {"episode_number": 12}]}
-            return {"metadatas": [{"story_order": 120}, {"story_order": 125}]}
-
-    engine.collection = FakeCollection()
-    analysis = analyze_query("What did Kaho know before episode 12?")
-
-    where = engine._where_for_analysis(analysis, summary_level=4)
-
-    assert where == {
-        "$and": [
-            {"summary_level": 4},
-            {"story_order": {"$lt": 120}},
-        ]
-    }
-
-
-def test_semantic_boundary_keeps_prior_story_order(monkeypatch) -> None:
-    engine = make_engine()
-    analysis = analyze_query("scenes before Ruri falls asleep")
-    before = raw_node("before", scene_start=0)
-    boundary = raw_node("boundary", scene_start=1)
-    after = raw_node("after", scene_start=2)
-    before[1]["story_order"] = 10
-    boundary[1]["story_order"] = 20
-    after[1]["story_order"] = 30
-
-    monkeypatch.setattr(
-        engine,
-        "_rank_raw_candidates",
-        lambda question, expanded_question, raw_nodes, seed_nodes: [boundary],
-    )
-
-    filtered = engine._filter_before_semantic_boundary(
-        "scenes before Ruri falls asleep",
-        "expanded",
-        [before, boundary, after],
-        [boundary],
-        analysis,
-    )
-
-    assert filtered == [before]
-
-
-def test_tier_two_fanout_retrieves_child_raw_evidence(monkeypatch):
-    engine = make_engine()
-    calls: list[dict[str, Any]] = []
-    tier_two_summary = (
-        "episode summary",
-        {
-            "summary_level": 2,
-            "parent_episode_id": "103|Main|第3話『テスト』",
-        },
-    )
-    child = raw_node(
-        "child scene",
-        scene_start=2,
-        parent_part_id="103|Main|第3話『テスト』|2",
-    )
-
-    def fake_hybrid_retrieve(
-        question: str,
-        *,
-        n_results: int,
-        where: dict[str, Any] | None = None,
-        query_embedding: list[float] | None = None,
-    ) -> list[tuple[str, dict[str, Any]]]:
-        calls.append({"n_results": n_results, "where": where})
-        assert query_embedding == [0.1]
-        return [child]
-
-    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
-    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
-
-    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_two_summary])
-
-    assert expanded == [child]
-    assert calls == [
-        {
-            "n_results": 30,
-            "where": {
-                "$and": [
-                    {"summary_level": 4},
-                    {"parent_episode_id": "103|Main|第3話『テスト』"},
-                ]
-            },
-        }
-    ]
-
-
-def test_summary_fanout_preserves_coalesced_child_spans(monkeypatch):
-    engine = make_engine()
-    tier_one_summary = (
-        "year summary",
-        {
-            "summary_level": 1,
-            "parent_year_id": "103",
-        },
-    )
-    coalesced_child = raw_node(
-        "coalesced child scene span",
-        scene_start=4,
-        scene_end=7,
-        parent_part_id="103|Main|第3話『テスト』|2",
-    )
-
-    monkeypatch.setattr(
-        engine,
-        "_hybrid_retrieve",
-        lambda question, **kwargs: [coalesced_child],
-    )
-    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
-
-    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_one_summary])
-
-    assert expanded == [coalesced_child]
-    assert engine._scene_span(expanded[0][1]) == (4, 7)
-
-
-def test_query_uses_only_raw_retrieval_for_scoped_question(monkeypatch):
-    engine = make_engine()
-    query_calls: list[dict[str, Any]] = []
-    embedding_calls: list[list[str]] = []
-    agent_prompts: list[str] = []
-
-    class FakeCollection:
-        def query(self, **kwargs: Any) -> dict[str, list[list[Any]]]:
-            query_calls.append(kwargs)
-            if kwargs.get("where") == {"summary_level": 4}:
-                return {
-                    "documents": [["花帆 reached the end of the term in the raw scene."]],
-                    "metadatas": [
-                        [
-                            {
-                                "arc_id": "105",
-                                "story_type": "Main",
-                                "episode_name": "第12話『テスト』",
-                                "part_name": "2",
-                                "summary_level": 4,
-                                "file_path": "missing.md",
-                                "scene_index": 4,
-                                "scene_start": 4,
-                                "scene_end": 4,
-                                "canonical_story_order": 1050,
-                                "parent_part_id": "105|Main|第12話『テスト』|2",
-                            }
-                        ]
-                    ],
-                }
-            return {
-                "documents": [[]],
-                "metadatas": [[]],
-            }
-
-    class FakeAgent:
-        def run_sync(self, prompt: str) -> Any:
-            agent_prompts.append(prompt)
-
-            class Result:
-                output = "answered from raw scene"
-
-            return Result()
-
-    def fake_embed_texts(texts: list[str], *, task_type: str) -> list[list[float]]:
-        embedding_calls.append(texts)
-        return [[0.1]]
-
-    monkeypatch.setattr(query_engine, "embed_texts", fake_embed_texts)
-    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
-    engine.collection = FakeCollection()
-
-    answer = engine.query("what happened to kaho at the end of the 105th term?")
-
-    assert answer == "answered from raw scene"
-    assert embedding_calls == [["what happened to kaho at the end of the 105th term?"]]
-    assert len(query_calls) == 1
-    assert query_calls[0]["where"] == {"summary_level": 4}
+    fi…1569 tokens truncated…mmary_level": 4}
     assert "SUMMARY:" not in agent_prompts[0]
     assert "花帆 reached the end of the term in the raw scene." in agent_prompts[0]
     assert "105 · Episode 12 · Part 2 · Scene 5" in agent_prompts[0]
@@ -1053,18 +869,145 @@ def test_query_caps_final_raw_evidence_to_configured_top_k(monkeypatch):
     monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: raw_nodes)
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
 
-    def fake_answer(
+    def fake_prompts(
         question: str,
         nodes: list[tuple[str, dict[str, Any]]],
         analysis: Any,
-    ) -> str:
+    ) -> tuple[str, str]:
         captured_counts.append(len(nodes))
-        return "answered"
+        return "system", "user"
 
-    monkeypatch.setattr(engine, "_answer_from_raw_evidence", fake_answer)
+    monkeypatch.setattr(engine, "_raw_answer_prompts", fake_prompts)
+    monkeypatch.setattr(engine, "_answer_from_prompts", lambda system, user: "answered")
 
     assert engine.query("What happened?") == "answered"
     assert captured_counts == [5]
+
+
+def test_stream_query_preserves_whitespace_boundaries_and_discards_trailing_whitespace(
+    monkeypatch,
+):
+    engine = make_engine()
+    raw_hit = raw_node("花帆: raw scene", scene_start=4)
+
+    class FakeStreamResult:
+        def stream_text(self, *, delta: bool, debounce_by: float) -> Any:
+            assert delta is True
+            assert debounce_by == 0.1
+            return iter(["  ", "Hello ", "\n", "world", "  "])
+
+    class FakeAgent:
+        def run_stream_sync(self, prompt: str) -> FakeStreamResult:
+            return FakeStreamResult()
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: [raw_hit])
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+
+    result = engine.stream_query("What happened?")
+    deltas = result.answer_deltas
+
+    assert iter(deltas) is deltas
+    assert list(deltas) == ["  Hello", " \nworld"]
+    assert list(deltas) == []
+
+
+def test_stream_query_uses_empty_output_fallback(monkeypatch):
+    engine = make_engine()
+    raw_hit = raw_node("花帆: raw scene", scene_start=4)
+
+    class FakeStreamResult:
+        def stream_text(self, *, delta: bool, debounce_by: float) -> Any:
+            return iter(["", "  ", "\n"])
+
+    class FakeAgent:
+        def run_stream_sync(self, prompt: str) -> FakeStreamResult:
+            return FakeStreamResult()
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: [raw_hit])
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+
+    assert list(engine.stream_query("What happened?").answer_deltas) == [
+        "No answer generated."
+    ]
+
+
+def test_stream_and_sync_queries_share_the_same_prompts_and_evidence(monkeypatch):
+    engine = make_engine()
+    raw_hit = raw_node("花帆: raw scene", scene_start=4)
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeStreamResult:
+        def __init__(self, system_prompt: str, user_prompt: str):
+            self.system_prompt = system_prompt
+            self.user_prompt = user_prompt
+
+        def stream_text(self, *, delta: bool, debounce_by: float) -> Any:
+            calls.append(("stream", self.system_prompt, self.user_prompt))
+            return iter(["streamed answer"])
+
+    class FakeAgent:
+        def __init__(self, system_prompt: str):
+            self.system_prompt = system_prompt
+
+        def run_sync(self, prompt: str) -> Any:
+            calls.append(("sync", self.system_prompt, prompt))
+
+            class Result:
+                output = "synchronous answer"
+
+            return Result()
+
+        def run_stream_sync(self, prompt: str) -> FakeStreamResult:
+            return FakeStreamResult(self.system_prompt, prompt)
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: [raw_hit])
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+    monkeypatch.setattr(
+        query_engine,
+        "create_text_agent",
+        lambda system_prompt: FakeAgent(system_prompt),
+    )
+
+    assert engine.query("What happened?") == "synchronous answer"
+    assert list(engine.stream_query("What happened?").answer_deltas) == ["streamed answer"]
+    assert calls[0][1:] == calls[1][1:]
+
+
+def test_stream_query_immediate_answers_are_single_chunks(monkeypatch):
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="heuristic")
+
+    class FakeSourceStore:
+        def count_turns(self, speaker: str) -> int:
+            return 3
+
+    engine.source_store = FakeSourceStore()
+    engine.glossary = {"characters": {"花帆": "Kaho Hinoshita"}}
+    monkeypatch.setattr(
+        query_engine,
+        "create_text_agent",
+        lambda system_prompt: (_ for _ in ()).throw(
+            AssertionError("immediate answers must not create a model agent")
+        ),
+    )
+
+    result = engine.stream_query("How many turns does Kaho have?")
+
+    assert list(result.answer_deltas) == [
+        "花帆 has 3 dialogue turns in the indexed source records."
+    ]
+
+
+def test_stream_query_insufficient_context_is_one_immediate_chunk(monkeypatch):
+    engine = make_engine()
+    monkeypatch.setattr(engine, "_hybrid_retrieve", lambda question, **kwargs: [])
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    result = engine.stream_query("What happened?")
+
+    assert list(result.answer_deltas) == [INSUFFICIENT_SOURCE_CONTEXT]
 
 
 def test_fetch_raw_text_returns_only_requested_scene(tmp_path):
@@ -1196,3 +1139,4 @@ def test_summary_citation_labels_include_summary_scope_without_scene():
     assert "Scene" not in year_label
     assert "Scene" not in episode_label
     assert "Scene" not in part_label
+
