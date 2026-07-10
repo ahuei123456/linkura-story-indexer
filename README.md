@@ -12,7 +12,9 @@ configured generation provider:
   Completions endpoints)
 
 If `LINKURA_INGEST_MODEL` is unset, generation falls back to
-`LINKURA_CHAT_MODEL`, then the repo default Gemini chat model. When
+`LINKURA_CHAT_MODEL`, then the repo default Gemini chat model. Query answer
+generation uses the same configured provider and model, and LLM routing uses
+the same provider. When
 `LINKURA_INGEST_PROVIDER=openai`, set `LINKURA_INGEST_MODEL` or set
 `LINKURA_CHAT_MODEL` to an OpenAI model name so the default Gemini model is not
 sent to OpenAI. Google generation requires `GOOGLE_API_KEY`. OpenAI generation
@@ -20,8 +22,8 @@ requires `OPENAI_API_KEY`.
 
 Embeddings are separate and still use the Google GenAI embedding path controlled
 by `LINKURA_EMBEDDING_MODEL` (default: `gemini-embedding-2`). Running `ingest`
-therefore always requires `GOOGLE_API_KEY`, even when
-`LINKURA_INGEST_PROVIDER=openai`.
+and retrieval through `query` or `chat` therefore always requires
+`GOOGLE_API_KEY`, even when `LINKURA_INGEST_PROVIDER=openai`.
 
 ## Querying
 
@@ -34,7 +36,9 @@ Use `--routing-mode heuristic` when you want targeted scoped workflows that
 apply analyzer-derived filters or structured helpers. Use
 `--routing-mode llm_router` to let the configured router model select one
 typed query tool before retrieval. The router model is controlled by
-`LINKURA_ROUTER_MODEL` and defaults to `gemini-3.1-flash-lite-preview`.
+`LINKURA_ROUTER_MODEL`. With the Google provider it defaults to
+`gemini-3.1-flash-lite-preview`; with the OpenAI provider it defaults to the
+configured generation model.
 
 ```powershell
 indexer query "What happened in the 105th term?" --routing-mode heuristic

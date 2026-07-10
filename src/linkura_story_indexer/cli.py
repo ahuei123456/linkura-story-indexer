@@ -18,7 +18,7 @@ from .database import (
     get_generation_provider_name,
     initialize_generation_settings,
     initialize_ingest_settings,
-    initialize_settings,
+    initialize_query_settings,
 )
 from .eval.io import load_eval_run, stable_json
 from .eval.metrics import diff_runs
@@ -354,7 +354,7 @@ def query(
 ):
     """Answers a question based on the RAG index and State Ledger."""
     mode = _routing_mode(routing_mode)
-    initialize_settings()
+    initialize_query_settings()
     engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
     console.print(f"\n[bold blue]Question:[/bold blue] {question}")
     if show_router and mode == "llm_router":
@@ -380,7 +380,7 @@ def chat(
 ):
     """Starts an interactive chat session with the RAG index."""
     mode = _routing_mode(routing_mode)
-    initialize_settings()
+    initialize_query_settings()
     engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
     console.print("[bold green]Interactive Chat Started! Type 'exit' or 'quit' to end.[/bold green]")
     

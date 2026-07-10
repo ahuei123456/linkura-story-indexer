@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..console import safe_print
-from ..database import RETRIEVAL_QUERY, create_text_agent, embed_texts, get_chroma_collection
+from ..database import (
+    RETRIEVAL_QUERY,
+    create_text_agent,
+    embed_texts,
+    get_chroma_collection,
+    get_generation_model_name,
+)
 from ..eval.models import (
     ROUTING_MODES,
     CandidateScores,
@@ -1321,7 +1327,7 @@ class StoryQueryEngine:
             f"CONTEXT:\n{combined_context}"
         )
 
-        safe_print("Synthesizing final answer with Gemini...")
+        safe_print(f"Synthesizing final answer with {get_generation_model_name()}...")
         result = create_text_agent(system_prompt).run_sync(user_prompt)
         return result.output.strip() or "No answer generated."
 
@@ -1348,7 +1354,7 @@ class StoryQueryEngine:
             f"CONTEXT:\n{combined_context}"
         )
 
-        safe_print("Synthesizing final answer with Gemini...")
+        safe_print(f"Synthesizing final answer with {get_generation_model_name()}...")
         result = create_text_agent(system_prompt).run_sync(user_prompt)
         return result.output.strip() or "No answer generated."
 

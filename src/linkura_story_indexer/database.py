@@ -65,7 +65,11 @@ def get_generation_model_name() -> str:
 
 
 def get_router_model_name() -> str:
-    return os.getenv("LINKURA_ROUTER_MODEL", DEFAULT_ROUTER_MODEL)
+    if router_model := os.getenv("LINKURA_ROUTER_MODEL"):
+        return router_model
+    if get_generation_provider_name() == "openai":
+        return get_generation_model_name()
+    return DEFAULT_ROUTER_MODEL
 
 
 def get_embedding_model_name() -> str:
@@ -106,9 +110,15 @@ def initialize_ingest_settings() -> None:
     initialize_generation_settings()
 
 
+def initialize_query_settings() -> None:
+    """Validates environment configuration for retrieval and answer generation."""
+    get_google_api_key()
+    initialize_generation_settings()
+
+
 def create_text_agent(instructions: str) -> Agent[None, str]:
-    """Creates a PydanticAI agent backed by Gemini."""
-    return Agent(create_google_model(), instructions=instructions)
+    """Creates a PydanticAI agent backed by the configured generation provider."""
+    return Agent(create_generation_model(), instructions=instructions)
 
 
 def create_generation_text_agent(instructions: str) -> Agent[None, str]:
@@ -116,9 +126,9 @@ def create_generation_text_agent(instructions: str) -> Agent[None, str]:
     return Agent(create_generation_model(), instructions=instructions)
 
 
-def create_generation_model() -> Any:
+def create_generation_model(model_name: str | None = None) -> Any:
     provider = get_generation_provider_name()
-    model_name = get_generation_model_name()
+    model_name = model_name or get_generation_model_name()
     if provider == "google":
         return create_google_model(model_name)
     if provider == "openai":

@@ -41,6 +41,14 @@ def test_generation_model_falls_back_to_chat_model(monkeypatch):
     assert database.get_generation_model_name() == "fallback-chat"
 
 
+def test_router_model_falls_back_to_openai_generation_model(monkeypatch):
+    monkeypatch.delenv("LINKURA_ROUTER_MODEL", raising=False)
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gpt-5-mini")
+
+    assert database.get_router_model_name() == "gpt-5-mini"
+
+
 def test_generation_model_uses_google_by_default(monkeypatch):
     database.reset_client_caches()
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
@@ -83,6 +91,20 @@ def test_generation_model_uses_openai_when_selected(monkeypatch):
     assert calls == ["gpt-5-mini"]
 
 
+def test_generation_model_honors_model_override(monkeypatch):
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    calls: list[str | None] = []
+
+    def fake_create_openai_model(model_name: str | None = None) -> str:
+        calls.append(model_name)
+        return "openai-model"
+
+    monkeypatch.setattr(database, "create_openai_model", fake_create_openai_model)
+
+    assert database.create_generation_model("gpt-router") == "openai-model"
+    assert calls == ["gpt-router"]
+
+
 def test_generation_settings_validate_only_selected_provider(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
@@ -118,6 +140,20 @@ def test_ingest_settings_still_require_google_for_embeddings(monkeypatch):
         assert "GOOGLE_API_KEY" in str(exc)
     else:
         raise AssertionError("initialize_ingest_settings should require GOOGLE_API_KEY")
+
+
+def test_query_settings_still_require_google_for_embeddings(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("LINKURA_INGEST_PROVIDER", "openai")
+    monkeypatch.setenv("LINKURA_INGEST_MODEL", "gpt-5-mini")
+
+    try:
+        database.initialize_query_settings()
+    except ValueError as exc:
+        assert "GOOGLE_API_KEY" in str(exc)
+    else:
+        raise AssertionError("initialize_query_settings should require GOOGLE_API_KEY")
 
 
 def test_client_and_model_helpers_return_singletons(monkeypatch):

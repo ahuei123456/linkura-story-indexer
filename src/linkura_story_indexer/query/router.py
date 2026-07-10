@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_ai import Agent
 
-from linkura_story_indexer.database import create_google_model, get_router_model_name
+from linkura_story_indexer.database import create_generation_model, get_router_model_name
 from linkura_story_indexer.query.tools import (
     QUERY_TOOL_REGISTRY,
     SearchRawInput,
@@ -259,7 +259,7 @@ class QueryRouter:
         engine: Any | None = None,
     ) -> RouterOutput:
         agent: Agent[None, RouterOutput] = Agent(
-            create_google_model(self.model_name),
+            create_generation_model(self.model_name),
             output_type=RouterOutput,
             instructions=self._instructions(engine),
         )
