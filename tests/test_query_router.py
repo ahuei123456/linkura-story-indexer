@@ -484,4 +484,3 @@ def test_fixture_router_falls_back_on_invalid_args_and_model_failure(
     assert failure_result.decision.fallback_used is True
     assert failure_result.decision.fallback_reason == "router model failure"
     assert captured == ["original:5", "original:5"]
-

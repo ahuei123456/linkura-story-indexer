@@ -151,4 +151,3 @@ def test_query_command_keeps_non_streaming_engine_path(monkeypatch: pytest.Monke
 
     assert engine.query_calls == ["question"]
     assert "synchronous answer" in recording_console.text()
-

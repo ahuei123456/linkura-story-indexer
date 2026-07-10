@@ -215,4 +215,3 @@ retrieval — don't start until Phases 1-5 are solid.
 Task 1 is the natural starting point: entirely local edits, no new
 concepts, gets the system prompt to stop lying while Tier 4 indexing
 is being built.
-

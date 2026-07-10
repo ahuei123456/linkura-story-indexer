@@ -585,7 +585,192 @@ def test_scene_range_constraint_matches_overlapping_coalesced_chunks() -> None:
         raw_node("scenes 5-6", scene_start=4, scene_end=5),
     ]
 
-    fi…1569 tokens truncated…mmary_level": 4}
+    filtered = engine._filter_raw_nodes_by_analysis(nodes, analysis)
+
+    assert filtered == [nodes[1], nodes[2]]
+
+
+def test_temporal_filter_resolves_to_numeric_story_order() -> None:
+    engine = make_engine()
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+            assert kwargs["where"] == {"$and": [{"summary_level": 4}, {"episode_number": 12}]}
+            return {"metadatas": [{"story_order": 120}, {"story_order": 125}]}
+
+    engine.collection = FakeCollection()
+    analysis = analyze_query("What did Kaho know before episode 12?")
+
+    where = engine._where_for_analysis(analysis, summary_level=4)
+
+    assert where == {
+        "$and": [
+            {"summary_level": 4},
+            {"story_order": {"$lt": 120}},
+        ]
+    }
+
+
+def test_semantic_boundary_keeps_prior_story_order(monkeypatch) -> None:
+    engine = make_engine()
+    analysis = analyze_query("scenes before Ruri falls asleep")
+    before = raw_node("before", scene_start=0)
+    boundary = raw_node("boundary", scene_start=1)
+    after = raw_node("after", scene_start=2)
+    before[1]["story_order"] = 10
+    boundary[1]["story_order"] = 20
+    after[1]["story_order"] = 30
+
+    monkeypatch.setattr(
+        engine,
+        "_rank_raw_candidates",
+        lambda question, expanded_question, raw_nodes, seed_nodes: [boundary],
+    )
+
+    filtered = engine._filter_before_semantic_boundary(
+        "scenes before Ruri falls asleep",
+        "expanded",
+        [before, boundary, after],
+        [boundary],
+        analysis,
+    )
+
+    assert filtered == [before]
+
+
+def test_tier_two_fanout_retrieves_child_raw_evidence(monkeypatch):
+    engine = make_engine()
+    calls: list[dict[str, Any]] = []
+    tier_two_summary = (
+        "episode summary",
+        {
+            "summary_level": 2,
+            "parent_episode_id": "103|Main|第3話『テスト』",
+        },
+    )
+    child = raw_node(
+        "child scene",
+        scene_start=2,
+        parent_part_id="103|Main|第3話『テスト』|2",
+    )
+
+    def fake_hybrid_retrieve(
+        question: str,
+        *,
+        n_results: int,
+        where: dict[str, Any] | None = None,
+        query_embedding: list[float] | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        calls.append({"n_results": n_results, "where": where})
+        assert query_embedding == [0.1]
+        return [child]
+
+    monkeypatch.setattr(engine, "_hybrid_retrieve", fake_hybrid_retrieve)
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_two_summary])
+
+    assert expanded == [child]
+    assert calls == [
+        {
+            "n_results": 30,
+            "where": {
+                "$and": [
+                    {"summary_level": 4},
+                    {"parent_episode_id": "103|Main|第3話『テスト』"},
+                ]
+            },
+        }
+    ]
+
+
+def test_summary_fanout_preserves_coalesced_child_spans(monkeypatch):
+    engine = make_engine()
+    tier_one_summary = (
+        "year summary",
+        {
+            "summary_level": 1,
+            "parent_year_id": "103",
+        },
+    )
+    coalesced_child = raw_node(
+        "coalesced child scene span",
+        scene_start=4,
+        scene_end=7,
+        parent_part_id="103|Main|第3話『テスト』|2",
+    )
+
+    monkeypatch.setattr(
+        engine,
+        "_hybrid_retrieve",
+        lambda question, **kwargs: [coalesced_child],
+    )
+    monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
+
+    expanded = engine._expand_summaries_to_raw_scenes("question", [tier_one_summary])
+
+    assert expanded == [coalesced_child]
+    assert engine._scene_span(expanded[0][1]) == (4, 7)
+
+
+def test_query_uses_only_raw_retrieval_for_scoped_question(monkeypatch):
+    engine = make_engine()
+    query_calls: list[dict[str, Any]] = []
+    embedding_calls: list[list[str]] = []
+    agent_prompts: list[str] = []
+
+    class FakeCollection:
+        def query(self, **kwargs: Any) -> dict[str, list[list[Any]]]:
+            query_calls.append(kwargs)
+            if kwargs.get("where") == {"summary_level": 4}:
+                return {
+                    "documents": [["花帆 reached the end of the term in the raw scene."]],
+                    "metadatas": [
+                        [
+                            {
+                                "arc_id": "105",
+                                "story_type": "Main",
+                                "episode_name": "第12話『テスト』",
+                                "part_name": "2",
+                                "summary_level": 4,
+                                "file_path": "missing.md",
+                                "scene_index": 4,
+                                "scene_start": 4,
+                                "scene_end": 4,
+                                "canonical_story_order": 1050,
+                                "parent_part_id": "105|Main|第12話『テスト』|2",
+                            }
+                        ]
+                    ],
+                }
+            return {
+                "documents": [[]],
+                "metadatas": [[]],
+            }
+
+    class FakeAgent:
+        def run_sync(self, prompt: str) -> Any:
+            agent_prompts.append(prompt)
+
+            class Result:
+                output = "answered from raw scene"
+
+            return Result()
+
+    def fake_embed_texts(texts: list[str], *, task_type: str) -> list[list[float]]:
+        embedding_calls.append(texts)
+        return [[0.1]]
+
+    monkeypatch.setattr(query_engine, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+    engine.collection = FakeCollection()
+
+    answer = engine.query("what happened to kaho at the end of the 105th term?")
+
+    assert answer == "answered from raw scene"
+    assert embedding_calls == [["what happened to kaho at the end of the 105th term?"]]
+    assert len(query_calls) == 1
+    assert query_calls[0]["where"] == {"summary_level": 4}
     assert "SUMMARY:" not in agent_prompts[0]
     assert "花帆 reached the end of the term in the raw scene." in agent_prompts[0]
     assert "105 · Episode 12 · Part 2 · Scene 5" in agent_prompts[0]
@@ -1139,4 +1324,3 @@ def test_summary_citation_labels_include_summary_scope_without_scene():
     assert "Scene" not in year_label
     assert "Scene" not in episode_label
     assert "Scene" not in part_label
-
