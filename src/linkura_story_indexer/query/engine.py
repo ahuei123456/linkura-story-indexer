@@ -27,6 +27,7 @@ from ..eval.models import (
 from ..indexer.parser import StoryParser
 from ..indexer.source_store import SourceRecordStore
 from ..lexical import LexicalIndex, expand_query_with_glossary
+from ..prompts import load_year_summaries, render_system_prompt, render_user_prompt
 from .analysis import (
     CHRONOLOGY_INTENT,
     EXACT_EVIDENCE_INTENT,
@@ -124,6 +125,7 @@ class StoryQueryEngine:
         self,
         state_file: str = "world_state.json",
         glossary_file: str = "glossary.json",
+        summary_cache_file: str = "summaries_cache.json",
         retrieval_config: RetrievalConfig | None = None,
         query_router: "QueryRouter | None" = None,
     ):
@@ -142,6 +144,8 @@ class StoryQueryEngine:
         if os.path.exists(glossary_file):
             with open(glossary_file, encoding="utf-8") as f:
                 self.glossary = json.load(f)
+
+        self.year_summaries = load_year_summaries(summary_cache_file)
 
     def _expanded_question(self, question: str) -> str:
         return expand_query_with_glossary(question, self.glossary)
@@ -254,49 +258,52 @@ class StoryQueryEngine:
         *,
         context_kind: Literal["raw", "summary"] = "raw",
     ) -> str:
-        """Builds the system prompt with invariants and state ledger."""
-        context_description = (
-            "provided raw source text"
-            if context_kind == "raw"
-            else "provided retrieved context, which may be generated summaries rather than raw source text"
-        )
-        citation_source = (
-            "retrieved raw evidence labels"
-            if context_kind == "raw"
-            else "retrieved context labels"
-        )
-        prompt = (
-            "You are an expert lore-keeper and archivist for a Japanese narrative story.\n"
-            f"Answer based strictly on the {context_description}.\n"
-            "Do NOT use outside knowledge. If the provided context does not contain the answer, "
-            "say so.\n"
-            "Cite sources using only the CITATION labels provided in retrieved context. "
-            "Do not cite raw Japanese episode titles. "
-            "Do not convert the Year/Arc ID to a real-world year like 2024.\n"
-        )
-
+        """Build the packaged system prompt with dynamic consistency context."""
+        glossary_sections: list[str] = []
         if self.glossary:
-            prompt += "\n--- OFFICIAL GLOSSARY (MANDATORY TRANSLATIONS) ---\n"
+            glossary_sections.append("--- OFFICIAL GLOSSARY (MANDATORY TRANSLATIONS) ---")
             for cat, terms in self.glossary.items():
-                prompt += f"\n{cat.replace('_', ' ').upper()}:\n"
+                glossary_sections.append(f"\n{cat.replace('_', ' ').upper()}:")
                 for jp, en in terms.items():
-                    prompt += f" - {jp} -> {en}\n"
+                    glossary_sections.append(f" - {jp} -> {en}")
 
         ledger_facts = self._state_ledger_slice(arc_ids, analysis)
+        ledger_sections: list[str] = []
         if ledger_facts:
-            prompt += "\n--- STATE LEDGER (FACTS) ---\n"
-            prompt += (
-                "Use these source-backed facts only for routing and consistency. "
-                f"Final answer citations must still come from {citation_source}.\n"
-            )
+            ledger_sections.append("--- STATE LEDGER (FACTS) ---")
             for arc_id in sorted(arc_ids):
                 arc_facts = [fact for fact in ledger_facts if fact.get("arc") == arc_id]
                 if not arc_facts:
                     continue
-                prompt += f"\nYEAR {arc_id} FACTS:\n"
-                prompt += json.dumps(arc_facts, ensure_ascii=False, separators=(",", ":")) + "\n"
+                ledger_sections.append(f"\nYEAR {arc_id} FACTS:")
+                ledger_sections.append(
+                    json.dumps(arc_facts, ensure_ascii=False, separators=(",", ":"))
+                )
 
-        return prompt
+        year_summary_sections: list[str] = []
+        for arc_id, summary in sorted(getattr(self, "year_summaries", {}).items()):
+            citation = (
+                f"{arc_id} · Main · Episode ALL_EPISODES · Part ALL_PARTS · summary_level 1"
+            )
+            year_summary_sections.extend(
+                [
+                    f"## YEAR/ARC {arc_id}",
+                    f"CITATION: {citation}",
+                    summary,
+                ]
+            )
+
+        return render_system_prompt(
+            context_kind=context_kind,
+            glossary="\n".join(glossary_sections),
+            state_ledger="\n".join(ledger_sections),
+            year_summaries=(
+                "--- STORY OVERVIEW (GENERATED YEAR SUMMARIES) ---\n\n"
+                + "\n\n".join(year_summary_sections)
+                if year_summary_sections
+                else ""
+            ),
+        )
 
     def _citation_label(self, metadata: dict[str, Any]) -> str:
         summary_level = metadata.get("summary_level")
@@ -1346,12 +1353,8 @@ class StoryQueryEngine:
         system_prompt = self._build_system_prompt(state_ledger_arc_ids, analysis)
         combined_context = "\n".join(self._build_context_chunks(raw_nodes))
 
-        user_prompt = (
-            "Please answer the following question based ONLY on the raw source text provided below.\n\n"
-            "Every factual claim should cite one or more provided CITATION labels exactly as written. "
-            "Use episode numbers in citations, never Japanese episode titles.\n\n"
-            f"QUESTION: {question}\n\n"
-            f"CONTEXT:\n{combined_context}"
+        user_prompt = render_user_prompt(
+            context_kind="raw", question=question, context=combined_context
         )
         return system_prompt, user_prompt
 
@@ -1368,7 +1371,9 @@ class StoryQueryEngine:
         question: str,
         summary_nodes: list[Node],
     ) -> tuple[str, str]:
-        state_ledger_arc_ids = self._state_ledger_arc_ids(question, self._raw_arc_ids(summary_nodes))
+        state_ledger_arc_ids = self._state_ledger_arc_ids(
+            question, self._raw_arc_ids(summary_nodes)
+        )
         system_prompt = self._build_system_prompt(
             state_ledger_arc_ids,
             None,
@@ -1376,14 +1381,8 @@ class StoryQueryEngine:
         )
         combined_context = "\n".join(self._build_summary_context_chunks(summary_nodes))
 
-        user_prompt = (
-            "Please answer the following question based ONLY on the retrieved context provided "
-            "below. The context may contain generated summaries rather than raw source text.\n\n"
-            "Every factual claim should cite one or more provided CITATION labels exactly as "
-            "written. Use the summary citation labels exactly as provided, including "
-            "summary_level. Do not invent scene labels for summary evidence.\n\n"
-            f"QUESTION: {question}\n\n"
-            f"CONTEXT:\n{combined_context}"
+        user_prompt = render_user_prompt(
+            context_kind="summary", question=question, context=combined_context
         )
 
         return system_prompt, user_prompt

@@ -52,6 +52,24 @@ indexer query "What happened in the 105th term?" --routing-mode off
 indexer chat --routing-mode off
 ```
 
+### Answer prompts
+
+Static answer-generation instructions are Markdown resources in
+`src/linkura_story_indexer/prompts`. Edit those files to revise answer policy;
+keep questions, retrieved context, glossary entries, and State Ledger facts as
+dynamic renderer inputs. Increment `PROMPT_VERSION` in the prompt module for a
+behavioral change so evaluations and future traces can identify the revision.
+When `summaries_cache.json` is present, every valid Year-level summary is also
+loaded into the system prompt as a generated Story Overview. These summaries
+can ground broad Year/Arc synthesis; narrower claims should continue drilling
+down to Episode, Part, or raw-scene evidence.
+
+Run the prompt and query-engine tests after a prompt change:
+
+```powershell
+uv run pytest tests/test_prompts.py tests/test_query_engine.py
+```
+
 ## Retrieval Evaluation
 
 Run the checked-in retrieval golden set without answer generation:
