@@ -36,7 +36,7 @@ class StoryProcessor:
             arc_id = parts[story_idx + 1]
             # Pattern: story/103/FolderName/FileName.md
             folder_name = parts[story_idx + 2]
-
+            
             if "～" in folder_name:
                 # Side story: folder is an Episode (e.g. ～Shades of Stars～)
                 # and file name is the Part (e.g. 第1話.md)
@@ -96,11 +96,11 @@ class StoryProcessor:
         """Reads a file, splits it into scenes, and returns StoryNodes."""
         with open(file_path, encoding='utf-8') as f:
             content = f.read()
-
+        
         metadata_base = cls.extract_hierarchy(file_path)
         is_script = StoryParser.is_script_format(content)
         scenes = StoryParser.split_into_scenes(content)
-
+        
         nodes = []
         for i, scene_text in enumerate(scenes):
             meta = metadata_base.model_copy(deep=True)
@@ -130,5 +130,5 @@ class StoryProcessor:
                     narrative_beats=beats,
                 )
             )
-
+            
         return nodes

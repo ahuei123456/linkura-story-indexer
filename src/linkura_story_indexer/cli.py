@@ -424,7 +424,7 @@ def extract_state(
     """Extracts source-backed facts from raw scenes to build the State Ledger."""
     initialize_generation_settings()
     console.print(f"Starting state extraction from raw scenes in {source_db}...")
-
+    
     extractor = StateExtractor(source_db_path=source_db)
     extractor.extract_from_sources(output_file=output_file)
 
@@ -618,12 +618,12 @@ def ingest(
 ):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
     initialize_ingest_settings()
-
+    
     story_path = Path(story_dir)
     if not story_path.exists():
         console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
         raise typer.Exit(1)
-
+        
     md_files = sorted(story_path.rglob("*.md"), key=lambda path: str(path))
     source_file_hashes = hash_files(md_files)
     console.print(f"Found {len(md_files)} markdown files. Parsing scenes...")
@@ -646,7 +646,7 @@ def ingest(
         f"Parsed {len(raw_nodes)} raw scenes and built {len(retrieval_chunks)} retrieval chunks. "
         "Starting Hierarchical Summarization..."
     )
-
+    
     glossary = None
     glossary_path = Path("glossary.json")
     glossary_hash = hash_json_file(glossary_path)
@@ -677,10 +677,10 @@ def ingest(
         cache_context=cache_context,
     )
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes, cache_file=cache_file)
-
+    
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     lexical_index = LexicalIndex(get_lexical_db_path())
-
+    
     raw_ids = _upsert_story_nodes(
         retrieval_chunks,
         progress_label="[green]Embedding raw retrieval chunks...",
@@ -720,7 +720,7 @@ def ingest(
         vector_ids=VectorIds(raw=sorted(raw_ids), summaries=sorted(summary_ids)),
     )
     write_manifest(manifest_file, manifest)
-
+    
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
 def main():
