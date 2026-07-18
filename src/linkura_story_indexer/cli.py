@@ -101,11 +101,38 @@ def _print_router_debug(engine: StoryQueryEngine, question: str) -> str:
     router_stage = trace.stages.get("router")
     if router_stage is not None:
         _print_router_metadata(router_stage.metadata)
+    else:
+        agent_stage = trace.stages.get("agent")
+        if agent_stage is not None:
+            _print_agent_metadata(agent_stage.metadata)
     return trace.answer_text or INSUFFICIENT_SOURCE_CONTEXT
 
 
 def _print_router_metadata(metadata: dict[str, Any]) -> None:
     for line in _router_debug_lines(metadata):
+        console.print(line)
+
+
+def _agent_debug_lines(metadata: dict[str, Any]) -> list[str]:
+    lines = ["[bold cyan]Agent:[/bold cyan]"]
+    for name in ("model", "request_count", "stop_reason", "fallback_reason"):
+        lines.append(f"  {name}: {metadata.get(name)}")
+    cited_labels = metadata.get("model_cited_labels")
+    if cited_labels:
+        lines.append(
+            "  model_cited_labels: "
+            + json.dumps(cited_labels, ensure_ascii=False, sort_keys=True)
+        )
+    tool_calls = metadata.get("tool_calls")
+    if tool_calls:
+        lines.append(
+            "  tool_calls: " + json.dumps(tool_calls, ensure_ascii=False, sort_keys=True)
+        )
+    return lines
+
+
+def _print_agent_metadata(metadata: dict[str, Any]) -> None:
+    for line in _agent_debug_lines(metadata):
         console.print(line)
 
 
@@ -342,24 +369,34 @@ def query(
     routing_mode: str = typer.Option(
         "off",
         "--routing-mode",
-        help="Routing mode: off, heuristic, or llm_router.",
+        help="Routing mode: off, heuristic, llm_router, or agentic.",
     ),
     show_router: bool = typer.Option(
         False,
         "--show-router/--hide-router",
-        help="Print the llm_router structured decision and validation metadata.",
+        help="Print router or agent structured decision and execution metadata.",
+    ),
+    audit: bool = typer.Option(
+        False,
+        "--audit/--no-audit",
+        help="Run the secondary answer audit pass.",
     ),
 ):
     """Answers a question based on the RAG index and State Ledger."""
     mode = _routing_mode(routing_mode)
     initialize_query_settings()
-    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
+    engine = StoryQueryEngine(
+        retrieval_config=RetrievalConfig(routing_mode=mode, audit_enabled=audit)
+    )
     console.print(f"\n[bold blue]Question:[/bold blue] {question}")
-    if show_router and mode == "llm_router":
+    if show_router and mode in {"llm_router", "agentic"}:
         answer = _print_router_debug(engine, question)
     else:
         if show_router:
-            console.print("[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]")
+            console.print(
+                "[yellow]--show-router only applies with --routing-mode llm_router or agentic."
+                "[/yellow]"
+            )
         answer = engine.query(question)
     console.print(f"\n[bold green]Answer:[/bold green]\n{answer}\n")
 
@@ -368,18 +405,29 @@ def chat(
     routing_mode: str = typer.Option(
         "off",
         "--routing-mode",
-        help="Routing mode: off, heuristic, or llm_router.",
+        help="Routing mode: off, heuristic, llm_router, or agentic.",
     ),
     show_router: bool = typer.Option(
         False,
         "--show-router/--hide-router",
-        help="Print the llm_router structured decision and validation metadata for each turn.",
+        help="Print router or agent structured execution metadata for each turn.",
+    ),
+    audit: bool = typer.Option(
+        False,
+        "--audit/--no-audit",
+        help="Run the secondary answer audit pass for each turn.",
     ),
 ):
-    """Starts an interactive chat session with the RAG index."""
+    """Starts an interactive chat session with the RAG index.
+
+    With --audit, each answer is prepared and emitted as one completed block so the
+    secondary audit can run before the response is displayed.
+    """
     mode = _routing_mode(routing_mode)
     initialize_query_settings()
-    engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
+    engine = StoryQueryEngine(
+        retrieval_config=RetrievalConfig(routing_mode=mode, audit_enabled=audit)
+    )
     console.print("[bold green]Interactive Chat Started! Type 'exit' or 'quit' to end.[/bold green]")
 
     while True:
@@ -400,9 +448,12 @@ def chat(
             answer_deltas = result.answer_deltas
             if show_router and mode == "llm_router" and result.router_metadata is not None:
                 _print_router_metadata(result.router_metadata)
+            elif show_router and mode == "agentic" and result.router_metadata is not None:
+                _print_agent_metadata(result.router_metadata)
             elif show_router:
                 console.print(
-                    "[yellow]--show-router only applies with --routing-mode llm_router.[/yellow]"
+                    "[yellow]--show-router only applies with --routing-mode llm_router or agentic."
+                    "[/yellow]"
                 )
             console.print("\n[bold green]Answer:[/bold green]")
             for delta in answer_deltas:
@@ -491,7 +542,7 @@ def eval_run_command(
     routing_mode: str = typer.Option(
         "off",
         "--routing-mode",
-        help="Routing mode: off, heuristic, or llm_router.",
+        help="Routing mode: off, heuristic, llm_router, or agentic.",
     ),
     output: str | None = typer.Option(
         None,
@@ -513,8 +564,16 @@ def eval_run_command(
         "--answer-mode/--retrieval-only",
         help="Also synthesize answers and evaluate answer text when credentials are configured.",
     ),
+    audit: bool = typer.Option(
+        False,
+        "--audit/--no-audit",
+        help="Run the secondary answer audit pass; requires --answer-mode.",
+    ),
 ):
     """Runs the retrieval evaluation harness."""
+    if audit and not answer_mode:
+        console.print("[red]Error: --audit requires --answer-mode.[/red]")
+        raise typer.Exit(1)
     try:
         run = run_eval_from_file(
             golden_set,
@@ -523,6 +582,7 @@ def eval_run_command(
             inspect_query_id=inspect_query_id,
             dump_traces_dir=dump_traces_dir,
             answer_mode=answer_mode,
+            audit_enabled=audit,
         )
     except (FileNotFoundError, ValueError) as exc:
         console.print(f"[red]Error: {exc}[/red]")

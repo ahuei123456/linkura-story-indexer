@@ -38,6 +38,9 @@ from .analysis import (
 )
 
 if TYPE_CHECKING:
+    from linkura_story_indexer.query.agent import QueryAgent
+    from linkura_story_indexer.query.audit import AnswerAuditor
+
     from .router import QueryRouter
 
 ROUTING_CANDIDATE_COUNT = 20
@@ -66,7 +69,8 @@ class RetrievalConfig:
     max_ranked_candidates: int = MAX_RANKED_CANDIDATES
     final_top_k: int = FINAL_TOP_K
     rrf_k: int = RRF_K
-    routing_mode: Literal["off", "heuristic", "llm_router"] = "off"
+    routing_mode: Literal["off", "heuristic", "llm_router", "agentic"] = "off"
+    audit_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.routing_candidate_count < 1:
@@ -124,6 +128,7 @@ class RoutedTraceResult:
     nodes: list[Node]
     stages: dict[StageName, StageTrace]
     direct_answer: str | None = None
+    citation_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -141,6 +146,7 @@ class _PreparedQuery:
     user_prompt: str | None = None
     router_metadata: dict[str, Any] | None = None
     final_citation_labels: tuple[str, ...] = ()
+    audit_nodes: tuple[Node, ...] = ()
 
 
 class StoryQueryEngine:
@@ -151,12 +157,16 @@ class StoryQueryEngine:
         summary_cache_file: str = "summaries_cache.json",
         retrieval_config: RetrievalConfig | None = None,
         query_router: "QueryRouter | None" = None,
+        query_agent: "QueryAgent | None" = None,
+        answer_auditor: "AnswerAuditor | None" = None,
     ):
         self.collection = get_chroma_collection()
         self.lexical_index = LexicalIndex()
         self.source_store: Any = SourceRecordStore()
         self.retrieval_config = retrieval_config or DEFAULT_RETRIEVAL_CONFIG
         self.query_router = query_router
+        self.query_agent = query_agent
+        self.answer_auditor = answer_auditor
 
         self.state_ledger: dict[str, Any] = {}
         if os.path.exists(state_file):
@@ -1861,6 +1871,24 @@ class StoryQueryEngine:
             self.query_router = QueryRouter()
         return self.query_router
 
+    def _get_query_agent(self) -> "QueryAgent":
+        query_agent = getattr(self, "query_agent", None)
+        if query_agent is None:
+            from linkura_story_indexer.query.agent import QueryAgent
+
+            query_agent = QueryAgent()
+            self.query_agent = query_agent
+        return query_agent
+
+    def _get_answer_auditor(self) -> "AnswerAuditor":
+        answer_auditor = getattr(self, "answer_auditor", None)
+        if answer_auditor is None:
+            from linkura_story_indexer.query.audit import AnswerAuditor
+
+            answer_auditor = AnswerAuditor()
+            self.answer_auditor = answer_auditor
+        return answer_auditor
+
     def _trace_candidate_from_tool_candidate(
         self,
         candidate: Any,
@@ -1916,6 +1944,159 @@ class StoryQueryEngine:
             direct_answer=direct_answer if isinstance(direct_answer, str) else None,
         )
 
+    def _agent_dispatch_with_trace(self, question: str) -> RoutedTraceResult:
+        from linkura_story_indexer.query.agent import _agent_tool_payload
+
+        run = self._get_query_agent().run(
+            self,
+            question,
+            final_top_k=self._config().final_top_k,
+        )
+        call_summaries = []
+        candidates = []
+        seen_labels: set[str] = set()
+        for call in run.tool_calls:
+            payload = _agent_tool_payload(call.result)
+            call_summaries.append(
+                {
+                    "step": call.step,
+                    "tool_name": call.tool_name,
+                    "args": call.args,
+                    **payload,
+                }
+            )
+            for candidate in call.result.candidates:
+                if len(candidates) >= self._config().final_top_k:
+                    break
+                if candidate.citation_label in seen_labels:
+                    continue
+                seen_labels.add(candidate.citation_label)
+                candidate.rank = len(candidates) + 1
+                candidates.append(candidate)
+
+        final_candidates = [
+            self._trace_candidate_from_tool_candidate(candidate)
+            for candidate in candidates
+        ]
+        stages: dict[StageName, StageTrace] = {
+            "agent": self._trace_stage(
+                "agent",
+                None,
+                metadata={
+                    "model": run.model_name,
+                    "request_count": run.request_count,
+                    "stop_reason": run.stop_reason,
+                    "fallback_reason": run.fallback_reason,
+                    "tool_calls": call_summaries,
+                    "model_cited_labels": list(run.answer.cited_labels),
+                },
+            ),
+            "final_top_k": self._trace_stage("final_top_k", final_candidates),
+        }
+        nodes = [
+            (candidate.text, dict(candidate.metadata))
+            for candidate in candidates
+            if candidate.metadata
+        ]
+        citation_labels = tuple(candidate.citation_label for candidate in candidates)
+        return RoutedTraceResult(
+            nodes=nodes,
+            stages=stages,
+            direct_answer=run.answer.answer,
+            citation_labels=citation_labels,
+        )
+
+    def _audit_stage(
+        self,
+        question: str,
+        answer_text: str,
+        nodes: list[Node],
+    ) -> StageTrace:
+        from linkura_story_indexer.query.audit import AuditReport, build_audit_payload
+
+        evidence = [
+            {
+                "citation_label": self._citation_label(metadata),
+                "text": document,
+                "metadata": dict(metadata),
+            }
+            for document, metadata in nodes
+        ]
+        glossary = getattr(self, "glossary", None)
+        try:
+            arc_ids = self._question_arc_ids(question)
+        except Exception:
+            arc_ids = set()
+        arc_ids.update(
+            str(metadata["arc_id"])
+            for _, metadata in nodes
+            if isinstance(metadata.get("arc_id"), str)
+        )
+        analysis = None
+        try:
+            analysis = analyze_query(question, glossary)
+        except Exception:
+            analysis = None
+        try:
+            state_facts = self._state_ledger_slice(arc_ids, analysis)
+        except Exception:
+            try:
+                state_facts = self._state_ledger_slice(arc_ids)
+            except Exception:
+                state_facts = []
+
+        payload = build_audit_payload(
+            question,
+            answer_text,
+            evidence,
+            state_facts,
+            glossary or {},
+        )
+        try:
+            auditor = self._get_answer_auditor()
+            report = auditor.audit(
+                question,
+                answer_text,
+                evidence=evidence,
+                state_facts=state_facts,
+                glossary=glossary or {},
+            )
+        except Exception as exc:
+            auditor = None
+            report = AuditReport(errors=[str(exc)])
+
+        report_data = report.model_dump(mode="json")
+        flags = report_data.get("flags", [])
+        errors = report_data.get("errors", [])
+        return self._trace_stage(
+            "audit",
+            None,
+            metadata={
+                "model": getattr(auditor, "model_name", None),
+                "payload": payload,
+                "report": report_data,
+                "flags": flags,
+                "errors": errors,
+                "audit_clean": not flags and not errors,
+                "flag_count": len(flags),
+            },
+        )
+
+    def _append_audit(
+        self,
+        question: str,
+        answer_text: str,
+        nodes: list[Node],
+    ) -> str:
+        if not self._config().audit_enabled or not answer_text:
+            return answer_text
+        from linkura_story_indexer.query.audit import AuditReport, render_audit_flags
+
+        stage = self._audit_stage(question, answer_text, nodes)
+        report = AuditReport.model_validate(stage.metadata.get("report", {}))
+        rendered = render_audit_flags(report)
+        return f"{answer_text}\n\n{rendered}" if rendered else answer_text
+
     def _router_unavailable_message(self, stages: dict[StageName, StageTrace]) -> str:
         router_stage = stages.get("router")
         metadata = router_stage.metadata if router_stage is not None else {}
@@ -1950,8 +2131,12 @@ class StoryQueryEngine:
     ) -> QueryTrace:
         """Executes the raw-first retrieval flow and returns deterministic stage traces."""
         effective_mode: EvalMode = mode if mode is not None else self._config().routing_mode
-        if effective_mode == "llm_router":
-            routed = self._router_dispatch_with_trace(question)
+        if effective_mode in {"llm_router", "agentic"}:
+            routed = (
+                self._router_dispatch_with_trace(question)
+                if effective_mode == "llm_router"
+                else self._agent_dispatch_with_trace(question)
+            )
             answer_text = None
             if answer_mode:
                 if routed.direct_answer is not None:
@@ -1960,15 +2145,18 @@ class StoryQueryEngine:
                     answer_text = self._answer_from_routed_evidence(question, routed)
                 else:
                     answer_text = self._router_unavailable_message(routed.stages)
+            if answer_mode and self._config().audit_enabled and answer_text:
+                routed.stages["audit"] = self._audit_stage(question, answer_text, routed.nodes)
             return QueryTrace(
                 query_id=query_id,
                 question=question,
                 mode=effective_mode,
                 config=self._config().__dict__,
                 stages=routed.stages,
-                final_citation_labels=[
-                    self._citation_label(metadata) for _, metadata in routed.nodes
-                ],
+                final_citation_labels=list(
+                    routed.citation_labels
+                    or tuple(self._citation_label(metadata) for _, metadata in routed.nodes)
+                ),
                 answer_text=answer_text,
             )
 
@@ -1981,6 +2169,8 @@ class StoryQueryEngine:
         answer_text = None
         if answer_mode and final_raw_nodes:
             answer_text = self._answer_from_raw_evidence(question, final_raw_nodes, analysis)
+        if answer_mode and self._config().audit_enabled and answer_text:
+            retrieval.stages["audit"] = self._audit_stage(question, answer_text, final_raw_nodes)
 
         return QueryTrace(
             query_id=query_id,
@@ -1997,21 +2187,46 @@ class StoryQueryEngine:
     def query(self, question: str) -> str:
         """Executes the raw-first RAG query flow."""
         prepared = self._prepare_query(question)
+        answer = self._answer_from_prepared(prepared)
+        return self._append_audit(question, answer, list(prepared.audit_nodes))
+
+    def stream_query(self, question: str) -> StreamingQueryResult:
+        """Prepares a query once and returns a one-use iterator of answer deltas."""
+        prepared = self._prepare_query(question)
+        if self._config().audit_enabled:
+            answer = self._answer_from_prepared(prepared)
+            answer = self._append_audit(question, answer, list(prepared.audit_nodes))
+            return StreamingQueryResult(
+                answer_deltas=iter([answer]),
+                router_metadata=prepared.router_metadata,
+            )
+        return StreamingQueryResult(
+            answer_deltas=self._stream_prepared_answer(prepared),
+            router_metadata=prepared.router_metadata,
+        )
+
+    def _answer_from_prepared(self, prepared: _PreparedQuery) -> str:
         if prepared.immediate_answer is not None:
             return prepared.immediate_answer
         if prepared.system_prompt is None or prepared.user_prompt is None:
             return "No answer generated."
         return self._answer_from_prompts(prepared.system_prompt, prepared.user_prompt)
 
-    def stream_query(self, question: str) -> StreamingQueryResult:
-        """Prepares a query once and returns a one-use iterator of answer deltas."""
-        prepared = self._prepare_query(question)
-        return StreamingQueryResult(
-            answer_deltas=self._stream_prepared_answer(prepared),
-            router_metadata=prepared.router_metadata,
-        )
-
     def _prepare_query(self, question: str) -> _PreparedQuery:
+        if self._config().routing_mode == "agentic":
+            safe_print("Running the agentic retrieval loop...")
+            routed = self._agent_dispatch_with_trace(question)
+            agent_stage = routed.stages.get("agent")
+            agent_metadata = dict(agent_stage.metadata) if agent_stage is not None else None
+            return _PreparedQuery(
+                immediate_answer=routed.direct_answer or self._router_unavailable_message(
+                    routed.stages
+                ),
+                router_metadata=agent_metadata,
+                final_citation_labels=routed.citation_labels,
+                audit_nodes=tuple(routed.nodes),
+            )
+
         if self._config().routing_mode == "llm_router":
             safe_print("Routing query to a typed retrieval tool...")
             routed = self._router_dispatch_with_trace(question)
@@ -2021,6 +2236,7 @@ class StoryQueryEngine:
                 return _PreparedQuery(
                     immediate_answer=routed.direct_answer,
                     router_metadata=router_metadata,
+                    audit_nodes=tuple(routed.nodes),
                 )
             if not routed.nodes:
                 return _PreparedQuery(
@@ -2040,6 +2256,7 @@ class StoryQueryEngine:
                 final_citation_labels=tuple(
                     self._citation_label(metadata) for _, metadata in routed.nodes
                 ),
+                audit_nodes=tuple(routed.nodes),
             )
 
         safe_print("Searching raw source evidence...")
@@ -2106,6 +2323,7 @@ class StoryQueryEngine:
             final_citation_labels=tuple(
                 self._citation_label(metadata) for _, metadata in final_raw_nodes
             ),
+            audit_nodes=tuple(final_raw_nodes),
         )
 
     def _stream_prepared_answer(self, prepared: _PreparedQuery) -> Iterator[str]:

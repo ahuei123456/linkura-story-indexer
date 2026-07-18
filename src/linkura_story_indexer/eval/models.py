@@ -2,7 +2,7 @@ from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
-RoutingMode = Literal["off", "heuristic", "llm_router"]
+RoutingMode = Literal["off", "heuristic", "llm_router", "agentic"]
 EvalMode = RoutingMode
 ROUTING_MODES = cast(tuple[RoutingMode, ...], get_args(RoutingMode))
 CandidateKind = Literal["raw_span", "summary", "summary_section", "reranker"]
@@ -18,6 +18,8 @@ StageName = Literal[
     "final_top_k",
     "reranker",
     "router",
+    "agent",
+    "audit",
 ]
 NeighborProvenance = Literal["direct_hit", "neighbor_of"]
 
@@ -83,6 +85,7 @@ class RunConfig(BaseModel):
     top_k: int = 8
     answer_mode: bool = False
     reranker_enabled: bool = False
+    audit_enabled: bool = False
 
 
 class CandidateScores(BaseModel):
@@ -133,6 +136,8 @@ class QueryMetrics(BaseModel):
     temporal_leakage: bool | None = None
     glossary_consistent: bool | None = None
     reranker_hit: bool | None = None
+    audit_clean: bool | None = None
+    audit_flag_count: int | None = None
 
 
 class AggregateMetrics(BaseModel):
@@ -143,6 +148,7 @@ class AggregateMetrics(BaseModel):
     temporal_leakage_rate: float | None = None
     glossary_consistency: float | None = None
     reranker_hit_rate: float | None = None
+    audit_clean_rate: float | None = None
     unavailable_reasons: dict[str, str] = Field(default_factory=dict)
 
 

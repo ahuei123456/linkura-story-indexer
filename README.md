@@ -35,14 +35,30 @@ or summary fanout.
 Use `--routing-mode heuristic` when you want targeted scoped workflows that
 apply analyzer-derived filters or structured helpers. Use
 `--routing-mode llm_router` to let the configured router model select one
-typed query tool before retrieval. The router model is controlled by
-`LINKURA_ROUTER_MODEL`. With the Google provider it defaults to
+typed query tool before retrieval. Use `--routing-mode agentic` for a capped,
+multi-step tool-calling loop that can combine glossary lookup, retrieval,
+point-in-time State Ledger checks, and exact SQL dialogue counts. Counting
+questions in agentic mode must use `count_dialogue`; the answer is never an
+LLM estimate. Agentic mode uses at most eight model requests by default; set
+`LINKURA_AGENT_REQUEST_LIMIT` to change the cap. The router model is controlled
+by `LINKURA_ROUTER_MODEL`. With the Google provider it defaults to
 `gemini-3.1-flash-lite-preview`; with the OpenAI provider it defaults to the
 configured generation model.
 
 ```powershell
 indexer query "What happened in the 105th term?" --routing-mode heuristic
 indexer chat --routing-mode llm_router
+indexer query "How many dialogue turns does 花帆 have in 103?" --routing-mode agentic
+```
+
+Add `--audit` to `query` or `chat` for a secondary answer check against the
+retrieved evidence, State Ledger, and official Glossary. Audit is opt-in for
+interactive use and reports possible retcons, wrong honorifics, or
+hallucinated names without changing the draft answer.
+
+```powershell
+indexer query "What does 花帆 call Sayaka in episode 1?" --routing-mode agentic --audit
+indexer chat --routing-mode agentic --audit
 ```
 
 Use `--routing-mode off` to make the default explicit:
@@ -78,9 +94,22 @@ Run the checked-in retrieval golden set without answer generation:
 uv run indexer eval run --golden-set eval/golden_questions.json --routing-mode off --output runs/baseline.json
 ```
 
-Use `--routing-mode heuristic` to compare analyzer-derived filters, or
-`--routing-mode llm_router` to evaluate typed router dispatch. Until the
-reranker lands, reranker metrics are emitted as unavailable.
+Use `--routing-mode heuristic` to compare analyzer-derived filters,
+`--routing-mode llm_router` to evaluate typed router dispatch, or
+`--routing-mode agentic --answer-mode` to evaluate the multi-step agent. Add
+`--audit` to the answer-mode run to aggregate audit cleanliness and flag counts.
+The audit flag requires answer mode. Compare router and agentic runs with the
+same golden set:
+
+```powershell
+indexer eval run --routing-mode llm_router --answer-mode --output runs/router.json
+indexer eval run --routing-mode agentic --answer-mode --output runs/agentic.json
+indexer eval diff runs/router.json runs/agentic.json
+```
+
+Until the reranker lands, reranker metrics are emitted as unavailable. The
+current golden set remains single-scene; multi-hop and expanded quantitative
+coverage should be added in a follow-up evaluation issue.
 
 ## Index Rebuilds
 

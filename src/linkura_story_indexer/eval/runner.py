@@ -25,9 +25,12 @@ def run_eval(
     mode: EvalMode = "off",
     engine: TraceEngine | None = None,
     answer_mode: bool = False,
+    audit_enabled: bool = False,
 ) -> EvalRun:
     if engine is None:
-        engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
+        engine = StoryQueryEngine(
+            retrieval_config=RetrievalConfig(routing_mode=mode, audit_enabled=audit_enabled)
+        )
 
     traces = [
         engine.retrieve_with_trace(
@@ -48,6 +51,7 @@ def run_eval(
             golden_set=golden_set_path,
             answer_mode=answer_mode,
             reranker_enabled=False,
+            audit_enabled=audit_enabled,
         ),
         aggregate_metrics=aggregate_metrics(query_metrics, traces),
         query_metrics=query_metrics,
@@ -63,6 +67,7 @@ def run_eval_from_file(
     inspect_query_id: str | None = None,
     dump_traces_dir: str | Path | None = None,
     answer_mode: bool = False,
+    audit_enabled: bool = False,
 ) -> EvalRun:
     golden_set = load_golden_set(golden_set_path)
     run = run_eval(
@@ -70,6 +75,7 @@ def run_eval_from_file(
         golden_set_path=str(golden_set_path),
         mode=mode,
         answer_mode=answer_mode,
+        audit_enabled=audit_enabled,
     )
     if output_path is not None:
         write_eval_run(run, output_path)

@@ -109,6 +109,27 @@ def _glossary_consistent(trace: QueryTrace, question: GoldenQuestion) -> bool | 
     )
 
 
+def _audit_metrics(trace: QueryTrace) -> tuple[bool | None, int | None]:
+    stage = trace.stages.get("audit")
+    if stage is None:
+        return None, None
+    metadata = stage.metadata
+    report = metadata.get("report", metadata.get("audit_report"))
+    if isinstance(report, dict):
+        flags = report.get("flags", [])
+        errors = report.get("errors", [])
+    elif hasattr(report, "model_dump"):
+        report_data = report.model_dump(mode="json")
+        flags = report_data.get("flags", [])
+        errors = report_data.get("errors", [])
+    else:
+        flags = metadata.get("flags", [])
+        errors = metadata.get("errors", [])
+    if not isinstance(flags, list) or not isinstance(errors, list):
+        return None, None
+    return not flags and not errors, len(flags)
+
+
 def _rate(values: Iterable[bool | None], *, invert: bool = False) -> float | None:
     concrete = [value for value in values if value is not None]
     if not concrete:
@@ -127,6 +148,7 @@ def evaluate_query(trace: QueryTrace, question: GoldenQuestion) -> QueryMetrics:
     reranker_hit = None
     if reranker_stage is not None and reranker_stage.candidates is not None:
         reranker_hit = _any_gold_in_stage(trace, question, "reranker")
+    audit_clean, audit_flag_count = _audit_metrics(trace)
     return QueryMetrics(
         query_id=question.id,
         gold_source_ranks=ranks,
@@ -136,6 +158,8 @@ def evaluate_query(trace: QueryTrace, question: GoldenQuestion) -> QueryMetrics:
         temporal_leakage=_temporal_leakage(trace, question),
         glossary_consistent=_glossary_consistent(trace, question),
         reranker_hit=reranker_hit,
+        audit_clean=audit_clean,
+        audit_flag_count=audit_flag_count,
     )
 
 
@@ -155,6 +179,7 @@ def aggregate_metrics(query_metrics: list[QueryMetrics], traces: list[QueryTrace
     ):
         unavailable_reasons["reranker_hit_rate"] = "reranker stage unavailable; #23 has not landed"
     reranker_hit_rate = _rate(metric.reranker_hit for metric in query_metrics)
+    audit_clean_rate = _rate(metric.audit_clean for metric in query_metrics)
     return AggregateMetrics(
         query_count=query_count,
         recall_at_k=recall_at_k,
@@ -167,6 +192,7 @@ def aggregate_metrics(query_metrics: list[QueryMetrics], traces: list[QueryTrace
         temporal_leakage_rate=_rate(metric.temporal_leakage for metric in query_metrics),
         glossary_consistency=_rate(metric.glossary_consistent for metric in query_metrics),
         reranker_hit_rate=reranker_hit_rate,
+        audit_clean_rate=audit_clean_rate,
         unavailable_reasons=unavailable_reasons,
     )
 
@@ -183,6 +209,7 @@ def diff_runs(before: EvalRun, after: EvalRun) -> EvalDiff:
         "temporal_leakage_rate",
         "glossary_consistency",
         "reranker_hit_rate",
+        "audit_clean_rate",
     ):
         before_value = getattr(before_metrics, field)
         after_value = getattr(after_metrics, field)

@@ -202,6 +202,61 @@ def test_diff_reports_aggregate_and_rank_changes() -> None:
     assert diff.rank_deltas[0].delta == -3
 
 
+def test_audit_metrics_aggregate_and_diff() -> None:
+    clean_trace = trace(final_candidates=[candidate(1, source(scene_start=1, scene_end=1))])
+    clean_trace.stages["audit"] = StageTrace(
+        name="audit",
+        candidates=None,
+        metadata={"report": {"flags": [], "errors": []}},
+    )
+    flagged_trace = trace(final_candidates=[candidate(1, source(scene_start=1, scene_end=1))])
+    flagged_trace.stages["audit"] = StageTrace(
+        name="audit",
+        candidates=None,
+        metadata={
+            "report": {
+                "flags": [
+                    {
+                        "flag_type": "retcon",
+                        "excerpt": "later",
+                        "rationale": "interval",
+                        "evidence_ref": "ledger",
+                    }
+                ],
+                "errors": [],
+            }
+        },
+    )
+
+    clean_metric = evaluate_query(clean_trace, question())
+    flagged_metric = evaluate_query(flagged_trace, question())
+    aggregate = aggregate_metrics(
+        [clean_metric, flagged_metric],
+        [clean_trace, flagged_trace],
+    )
+
+    assert clean_metric.audit_clean is True
+    assert clean_metric.audit_flag_count == 0
+    assert flagged_metric.audit_clean is False
+    assert flagged_metric.audit_flag_count == 1
+    assert aggregate.audit_clean_rate == 0.5
+
+    before = EvalRun(
+        config=RunConfig(golden_set="golden.json", audit_enabled=True),
+        aggregate_metrics=aggregate,
+        query_metrics=[clean_metric, flagged_metric],
+        traces=[clean_trace, flagged_trace],
+    )
+    after = EvalRun(
+        config=RunConfig(golden_set="golden.json", audit_enabled=True),
+        aggregate_metrics=aggregate.model_copy(update={"audit_clean_rate": 1.0}),
+        query_metrics=[clean_metric, flagged_metric],
+        traces=[clean_trace, flagged_trace],
+    )
+
+    assert diff_runs(before, after).aggregate_deltas["audit_clean_rate"] == 0.5
+
+
 def test_golden_set_rejects_duplicate_ids(tmp_path: Path) -> None:
     path = tmp_path / "golden.json"
     payload = {
