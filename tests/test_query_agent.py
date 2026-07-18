@@ -63,8 +63,9 @@ def test_agent_toolset_registers_the_shared_typed_schemas() -> None:
     assert request_parameters is not None
     by_name = {tool.name: tool for tool in request_parameters.function_tools}
     assert set(by_name) == {
-        "search_raw",
-        "search_summaries",
+        "vector_search_raw",
+        "vector_search_summaries",
+        "get_summaries",
         "get_scene",
         "lookup_glossary",
         "get_state",
@@ -130,7 +131,7 @@ def test_function_model_agent_records_multi_step_calls_and_reranks_candidates(
             return ModelResponse(
                 parts=[
                     ToolCallPart(
-                        tool_name="search_raw",
+                        tool_name="vector_search_raw",
                         args={"query": "Kaho", "top_k": 1},
                     )
                 ]
@@ -160,7 +161,7 @@ def test_function_model_agent_records_multi_step_calls_and_reranks_candidates(
     assert trace.stages["agent"].metadata["stop_reason"] == "final_answer"
     assert [
         call["tool_name"] for call in trace.stages["agent"].metadata["tool_calls"]
-    ] == ["lookup_glossary", "search_raw"]
+    ] == ["lookup_glossary", "vector_search_raw"]
     assert trace.stages["final_top_k"].candidates is not None
     assert trace.stages["final_top_k"].candidates[0].rank == 1
     assert trace.final_citation_labels == ["103 · Episode 1 · Part 1 · Scene 1"]
@@ -219,7 +220,7 @@ def test_usage_limit_falls_back_to_one_raw_search(monkeypatch: Any) -> None:
     result = engine.query_agent.run(engine, "question", final_top_k=5)
 
     assert result.stop_reason == "usage_limit"
-    assert result.tool_calls[0].tool_name == "search_raw"
+    assert result.tool_calls[0].tool_name == "vector_search_raw"
     assert result.fallback_reason == "request cap"
 
 
@@ -232,7 +233,7 @@ def test_fixture_agent_traces_are_stable_across_runs(monkeypatch: Any) -> None:
     monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve)
     monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
     engine.query_agent = FixtureQueryAgent(
-        calls=[("search_raw", {"query": "question", "top_k": 1})],
+        calls=[("vector_search_raw", {"query": "question", "top_k": 1})],
         answer="fixture answer",
     )
 

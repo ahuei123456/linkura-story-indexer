@@ -40,7 +40,7 @@ def test_chat_streams_incremental_verbatim_output_and_reuses_router_metadata(
                 answer_deltas=iter(["[first]", " second"]),
                 router_metadata={
                     "router_model": "fixture-router",
-                    "chosen_tool": "search_raw",
+                    "chosen_tool": "vector_search_raw",
                     "validated_args": {"query": question},
                     "fallback_used": False,
                     "fallback_reason": None,
@@ -56,7 +56,7 @@ def test_chat_streams_incremental_verbatim_output_and_reuses_router_metadata(
     cli.chat(routing_mode="llm_router", show_router=True)
 
     assert engine.questions == ["question"]
-    assert "  chosen_tool: search_raw" in recording_console.text()
+    assert "  chosen_tool: vector_search_raw" in recording_console.text()
     chunk_calls = [call for call in recording_console.calls if call[0] in {("[first]",), (" second",)}]
     assert [call[0][0] for call in chunk_calls] == ["[first]", " second"]
     assert all(call[1]["markup"] is False for call in chunk_calls)

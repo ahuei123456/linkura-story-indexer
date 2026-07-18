@@ -52,6 +52,7 @@ FINAL_TOP_K = 8
 MIN_FINAL_TOP_K = 5
 MAX_FINAL_TOP_K = 12
 RRF_K = 60
+SUMMARY_EVIDENCE_TOOLS = {"vector_search_summaries", "get_summaries"}
 INSUFFICIENT_SOURCE_CONTEXT = (
     "Insufficient source context: no raw source scenes were found for this question."
 )
@@ -2117,7 +2118,7 @@ class StoryQueryEngine:
 
     def _answer_from_routed_evidence(self, question: str, routed: RoutedTraceResult) -> str:
         chosen_tool = self._routed_chosen_tool(routed.stages)
-        if chosen_tool == "search_summaries":
+        if chosen_tool in SUMMARY_EVIDENCE_TOOLS:
             return self._answer_from_summary_evidence(question, routed.nodes)
         return self._answer_from_raw_evidence(question, routed.nodes, None)
 
@@ -2243,7 +2244,7 @@ class StoryQueryEngine:
                     immediate_answer=self._router_unavailable_message(routed.stages),
                     router_metadata=router_metadata,
                 )
-            if self._routed_chosen_tool(routed.stages) == "search_summaries":
+            if self._routed_chosen_tool(routed.stages) in SUMMARY_EVIDENCE_TOOLS:
                 safe_print("Building answer context from routed summary evidence...")
                 system_prompt, user_prompt = self._summary_answer_prompts(question, routed.nodes)
             else:

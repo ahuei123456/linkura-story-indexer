@@ -36,7 +36,7 @@ The goal is to implement a **Hierarchical RAG (Retrieval-Augmented Generation)**
 ### Phase 4: Retrieval Logic (Orchestration)
 1.  **Intent Detection:** Determine if the query is Global (Arc) or Specific (Scene).
 2.  **Temporal Filtering:** Apply metadata filters to prevent the LLM from "knowing the future" during translation or specific QA.
-3.  **Tool Calling:** * `search_summaries(query)`: Finds the relevant Chapter/Volume.
+3.  **Tool Calling:** * `vector_search_summaries(query)`: Finds relevant summaries by topic; `get_summaries` directly fetches a known location.
     * `get_detailed_context(chapter_id)`: Pulls raw structured scenes.
     * `get_state_ledger()`: Injects the "Current Truth" into the system prompt.
 

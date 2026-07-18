@@ -68,10 +68,10 @@ def summary_node(text: str = "summary") -> tuple[str, dict[str, Any]]:
 
 def test_router_output_accepts_structured_tool_selection() -> None:
     output = RouterOutput.model_validate(
-        {"tool_name": "search_raw", "args": {"query": "Kaho", "top_k": 3}}
+        {"tool_name": "vector_search_raw", "args": {"query": "Kaho", "top_k": 3}}
     )
 
-    assert output.tool_name == "search_raw"
+    assert output.tool_name == "vector_search_raw"
     assert output.args == {"query": "Kaho", "top_k": 3}
 
 
@@ -83,9 +83,12 @@ def test_router_prompt_guides_story_locations_to_filtered_raw_search() -> None:
     assert "'104 term' -> arc_id='104'" in instructions
     assert "'Year 105' -> arc_id='105'" in instructions
     assert "'episode 1', 'ep 1', or '第1話' map to episode=1" in instructions
-    assert "use search_raw with arc_id and episode filters" in instructions
+    assert "use vector_search_raw with arc_id and episode filters" in instructions
+    assert "MUST use get_summaries" in instructions
+    assert "vector_search_summaries only to locate summaries by topic" in instructions
     assert "what happened in episode 13 of the 103rd term" in instructions
     assert "args={'query':'what happened','arc_id':'103','episode':13,'top_k':8}" in instructions
+    assert "tool_name='get_summaries', args={'arc_id':'104','summary_level':1}" in instructions
     assert "how did Kosuzu join the school idol club" in instructions
 
 
@@ -93,23 +96,23 @@ def test_router_debug_lines_include_selection_and_fallback_metadata() -> None:
     lines = _router_debug_lines(
         {
             "router_model": "fixture-router",
-            "chosen_tool": "search_raw",
+            "chosen_tool": "vector_search_raw",
             "validated_args": {"query": "Kaho", "top_k": 5},
             "fallback_used": True,
             "fallback_reason": "invalid tool arguments",
             "validation_errors": ["bad args"],
-            "raw_structured_model_output": {"tool_name": "search_summaries", "args": {}},
+            "raw_structured_model_output": {"tool_name": "vector_search_summaries", "args": {}},
         }
     )
 
     assert lines[0] == "[bold cyan]Router:[/bold cyan]"
     assert "  model: fixture-router" in lines
-    assert "  chosen_tool: search_raw" in lines
+    assert "  chosen_tool: vector_search_raw" in lines
     assert '  args: {"query": "Kaho", "top_k": 5}' in lines
     assert "  fallback_used: True" in lines
     assert "  fallback_reason: invalid tool arguments" in lines
     assert '  validation_errors: ["bad args"]' in lines
-    assert '  raw_output: {"args": {}, "tool_name": "search_summaries"}' in lines
+    assert '  raw_output: {"args": {}, "tool_name": "vector_search_summaries"}' in lines
 
 
 def test_router_prompt_includes_available_episode_catalog() -> None:
@@ -147,7 +150,7 @@ def test_router_rejects_unknown_tool_with_raw_search_fallback() -> None:
     )
 
     assert decision.fallback_used is True
-    assert decision.tool_name == "search_raw"
+    assert decision.tool_name == "vector_search_raw"
     assert decision.validated_args.model_dump(include={"query", "top_k"}) == {
         "query": "original question",
         "top_k": 5,
@@ -157,13 +160,17 @@ def test_router_rejects_unknown_tool_with_raw_search_fallback() -> None:
 
 def test_router_validates_selected_tool_arguments() -> None:
     valid = validate_router_output(
-        RouterOutput(tool_name="search_summaries", args={"query": "Kaho", "summary_level": 2}),
+        RouterOutput(
+            tool_name="vector_search_summaries", args={"query": "Kaho", "summary_level": 2}
+        ),
         question="original",
         final_top_k=5,
         router_model="test-router",
     )
     invalid = validate_router_output(
-        RouterOutput(tool_name="search_summaries", args={"query": "Kaho", "summary_level": 4}),
+        RouterOutput(
+            tool_name="vector_search_summaries", args={"query": "Kaho", "summary_level": 4}
+        ),
         question="original",
         final_top_k=5,
         router_model="test-router",
@@ -172,7 +179,7 @@ def test_router_validates_selected_tool_arguments() -> None:
     assert valid.fallback_used is False
     assert valid.validated_args.model_dump()["summary_level"] == 2
     assert invalid.fallback_used is True
-    assert invalid.tool_name == "search_raw"
+    assert invalid.tool_name == "vector_search_raw"
     assert "summary_level" in invalid.validation_errors[0]
 
 
@@ -202,11 +209,11 @@ def test_fixture_router_dispatches_selected_tool_without_model_calls(
     monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve_raw_nodes_with_trace)
     monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
 
-    router = FixtureQueryRouter("search_raw", {"query": "routed query", "top_k": 1})
+    router = FixtureQueryRouter("vector_search_raw", {"query": "routed query", "top_k": 1})
     result = router.route_and_dispatch(engine, "original question", final_top_k=5)
 
     assert result.decision.fallback_used is False
-    assert result.decision.tool_name == "search_raw"
+    assert result.decision.tool_name == "vector_search_raw"
     assert result.tool_result.candidates[0].text == "花帆: routed raw scene"
     assert captured[0]["question"] == "routed query"
     assert captured[0]["top_k"] == 1
@@ -217,7 +224,9 @@ def test_llm_router_trace_records_router_metadata_and_final_candidates(
 ) -> None:
     engine = make_engine()
     engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
-    engine.query_router = FixtureQueryRouter("search_raw", {"query": "routed query", "top_k": 1})
+    engine.query_router = FixtureQueryRouter(
+        "vector_search_raw", {"query": "routed query", "top_k": 1}
+    )
 
     def fake_retrieve_raw_nodes_with_trace(
         question: str,
@@ -235,7 +244,7 @@ def test_llm_router_trace_records_router_metadata_and_final_candidates(
     trace = engine.retrieve_with_trace("original", query_id="q-router")
 
     assert trace.mode == "llm_router"
-    assert trace.stages["router"].metadata["chosen_tool"] == "search_raw"
+    assert trace.stages["router"].metadata["chosen_tool"] == "vector_search_raw"
     assert trace.stages["router"].metadata["fallback_used"] is False
     assert trace.stages["final_top_k"].candidates is not None
     assert trace.stages["final_top_k"].candidates[0].text == "routed raw scene"
@@ -247,7 +256,7 @@ def test_llm_router_summary_route_uses_summary_evidence_labels(
     engine = make_engine()
     engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
     engine.query_router = FixtureQueryRouter(
-        "search_summaries",
+        "vector_search_summaries",
         {"query": "routed summary query", "top_k": 1, "summary_level": 1},
     )
     prompts: list[str] = []
@@ -293,7 +302,7 @@ def test_llm_router_summary_route_uses_summary_evidence_labels(
 
     assert trace.mode == "llm_router"
     assert trace.answer_text == "answered from summary"
-    assert trace.stages["router"].metadata["chosen_tool"] == "search_summaries"
+    assert trace.stages["router"].metadata["chosen_tool"] == "vector_search_summaries"
     assert trace.stages["final_top_k"].candidates is not None
     assert trace.stages["final_top_k"].candidates[0].candidate_kind == "summary"
     assert trace.final_citation_labels == [
@@ -308,6 +317,58 @@ def test_llm_router_summary_route_uses_summary_evidence_labels(
     assert "Scene 1" not in prompts[0]
     assert any("Summary evidence 1" in line for line in console_lines)
     assert all("Scene 1" not in line for line in console_lines)
+
+
+def test_llm_router_direct_summary_route_uses_summary_evidence_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = make_engine()
+    engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
+    engine.query_router = FixtureQueryRouter(
+        "get_summaries",
+        {"arc_id": "103", "episode": 3, "story_type": "Main"},
+    )
+    prompts: list[str] = []
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["where"] == {
+                "$and": [
+                    {"summary_level": {"$in": [2, 3]}},
+                    {"arc_id": "103"},
+                    {"story_type": "Main"},
+                    {"episode_number": 3},
+                ]
+            }
+            assert kwargs["include"] == ["documents", "metadatas"]
+            text, metadata = summary_node("Episode 3 direct summary")
+            metadata["summary_level"] = 2
+            metadata["episode_number"] = 3
+            return {"documents": [text], "metadatas": [metadata]}
+
+    class FakeAgent:
+        def run_sync(self, prompt: str) -> Any:
+            prompts.append(prompt)
+
+            class Result:
+                output = "answered from direct summary"
+
+            return Result()
+
+    engine.collection = FakeCollection()
+    monkeypatch.setattr(query_engine, "create_text_agent", lambda system_prompt: FakeAgent())
+
+    trace = engine.retrieve_with_trace("original", query_id="q-direct-summary", answer_mode=True)
+
+    assert trace.answer_text == "answered from direct summary"
+    assert trace.stages["router"].metadata["chosen_tool"] == "get_summaries"
+    assert set(trace.stages) == {"router", "final_top_k"}
+    assert trace.final_citation_labels == [
+        "103 · Main · Episode 3 · Part ALL_PARTS · summary_level 2"
+    ]
+    assert prompts
+    assert "SUMMARY EVIDENCE 1" in prompts[0]
+    assert "GENERATED SUMMARY TEXT" in prompts[0]
 
 
 def test_llm_router_returns_direct_glossary_answer() -> None:
@@ -345,7 +406,7 @@ def test_stream_query_synthesizes_routed_summary_evidence(monkeypatch: pytest.Mo
     engine = make_engine()
     engine.retrieval_config = RetrievalConfig(routing_mode="llm_router", final_top_k=5)
     engine.query_router = FixtureQueryRouter(
-        "search_summaries",
+        "vector_search_summaries",
         {"query": "routed summary query", "top_k": 1, "summary_level": 1},
     )
     prompts: list[str] = []
@@ -380,7 +441,7 @@ def test_stream_query_synthesizes_routed_summary_evidence(monkeypatch: pytest.Mo
 
     assert list(result.answer_deltas) == ["summary", " answer"]
     assert result.router_metadata is not None
-    assert result.router_metadata["chosen_tool"] == "search_summaries"
+    assert result.router_metadata["chosen_tool"] == "vector_search_summaries"
     assert "SUMMARY EVIDENCE 1" in prompts[0]
     assert "GENERATED SUMMARY TEXT" in prompts[0]
 
@@ -473,7 +534,7 @@ def test_fixture_router_falls_back_on_invalid_args_and_model_failure(
     monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve_raw_nodes_with_trace)
     monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
 
-    invalid_args = FixtureQueryRouter("search_raw", {"query": "", "top_k": 1})
+    invalid_args = FixtureQueryRouter("vector_search_raw", {"query": "", "top_k": 1})
     failed_model = FixtureQueryRouter(error=RuntimeError("model unavailable"))
 
     invalid_result = invalid_args.route_and_dispatch(engine, "original", final_top_k=5)

@@ -17,6 +17,7 @@ from linkura_story_indexer.query.tools import (
     CountDialogueInput,
     GetSceneInput,
     GetStateInput,
+    GetSummariesInput,
     LookupGlossaryInput,
     SearchRawInput,
     SearchSummariesInput,
@@ -24,9 +25,10 @@ from linkura_story_indexer.query.tools import (
     count_dialogue,
     get_scene,
     get_state,
+    get_summaries,
     lookup_glossary,
-    search_raw,
-    search_summaries,
+    vector_search_raw,
+    vector_search_summaries,
 )
 
 
@@ -97,6 +99,14 @@ def summary_node(
         (SearchRawInput, {"query": "x", "top_k": 1, "scene_start": 3, "scene_end": 2}),
         (SearchSummariesInput, {"query": "x", "top_k": 0}),
         (SearchSummariesInput, {"query": "x", "top_k": 1, "summary_level": 4}),
+        (GetSummariesInput, {"episode": 1, "summary_level": 1}),
+        (GetSummariesInput, {"part": "1", "summary_level": 2}),
+        (GetSummariesInput, {"arc_id": " "}),
+        (GetSummariesInput, {"story_type": " "}),
+        (GetSummariesInput, {"part": " "}),
+        (GetSummariesInput, {"episode": 0}),
+        (GetSummariesInput, {"limit": 0}),
+        (GetSummariesInput, {"limit": 101}),
         (GetSceneInput, {"file_path": "story.md", "scene_index": -1}),
         (GetStateInput, {"arc_id": ""}),
         (GetStateInput, {"arc_id": "   "}),
@@ -118,7 +128,7 @@ def test_query_tool_inputs_reject_invalid_arguments(
         model.model_validate(args)
 
 
-def test_search_raw_returns_ranked_candidates_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vector_search_raw_returns_ranked_candidates_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = make_engine()
     seed = raw_node("weak seed", scene_start=0)
     exact = raw_node("花帆 talks about practice", scene_start=1)
@@ -155,7 +165,7 @@ def test_search_raw_returns_ranked_candidates_and_trace(monkeypatch: pytest.Monk
     monkeypatch.setattr(engine, "_hybrid_retrieve_trace", fake_hybrid_retrieve_trace)
     monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
 
-    result = search_raw(
+    result = vector_search_raw(
         engine,
         SearchRawInput(
             query="What practice does 花帆 mention?",
@@ -185,7 +195,7 @@ def test_search_raw_returns_ranked_candidates_and_trace(monkeypatch: pytest.Monk
     }
 
 
-def test_search_summaries_filters_level_and_arc(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vector_search_summaries_filters_level_and_arc(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = make_engine()
     summary = summary_node("Kaho starts school.", summary_level=2, arc_id="103")
     captured: list[dict[str, Any]] = []
@@ -211,7 +221,7 @@ def test_search_summaries_filters_level_and_arc(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(engine, "_query_embedding", lambda question: [0.1])
     monkeypatch.setattr(engine, "_hybrid_retrieve_trace", fake_hybrid_retrieve_trace)
 
-    result = search_summaries(
+    result = vector_search_summaries(
         engine,
         SearchSummariesInput(query="Kaho", top_k=3, summary_level=2, arc_id="103"),
     )
@@ -227,6 +237,131 @@ def test_search_summaries_filters_level_and_arc(monkeypatch: pytest.MonkeyPatch)
             "where": {"$and": [{"summary_level": 2}, {"arc_id": "103"}]},
         }
     ]
+
+
+def test_get_summaries_maps_filters_and_orders_before_limiting() -> None:
+    engine = make_engine()
+    calls: list[dict[str, Any]] = []
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "documents": ["part later", "episode", "part earlier"],
+                "metadatas": [
+                    {
+                        "summary_level": 3,
+                        "story_order": 30,
+                        "arc_id": "103",
+                        "story_type": "Main",
+                        "episode_number": 2,
+                        "part_name": "2",
+                    },
+                    {
+                        "summary_level": 2,
+                        "story_order": 20,
+                        "arc_id": "103",
+                        "story_type": "Main",
+                        "episode_number": 2,
+                    },
+                    {
+                        "summary_level": 3,
+                        "story_order": 10,
+                        "arc_id": "103",
+                        "story_type": "Main",
+                        "episode_number": 1,
+                        "part_name": "1",
+                    },
+                ],
+            }
+
+    engine.collection = FakeCollection()
+
+    result = get_summaries(
+        engine,
+        GetSummariesInput(
+            arc_id=" 103 ",
+            story_type=" Main ",
+            episode=2,
+            limit=2,
+        ),
+    )
+
+    assert calls == [
+        {
+            "where": {
+                "$and": [
+                    {"summary_level": {"$in": [2, 3]}},
+                    {"arc_id": "103"},
+                    {"story_type": "Main"},
+                    {"episode_number": 2},
+                ]
+            },
+            "include": ["documents", "metadatas"],
+        }
+    ]
+    assert [candidate.text for candidate in result.candidates] == ["episode", "part earlier"]
+    assert [candidate.rank for candidate in result.candidates] == [1, 2]
+    assert result.metadata == {
+        "where": {
+            "$and": [
+                {"summary_level": {"$in": [2, 3]}},
+                {"arc_id": "103"},
+                {"story_type": "Main"},
+                {"episode_number": 2},
+            ]
+        },
+        "total_matched": 3,
+        "truncated": True,
+    }
+    assert result.warnings == ["summaries truncated to limit 2 from 3 matches"]
+    assert result.trace_stages == {}
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_level_filter"),
+    [
+        ({}, {"$in": [1, 2, 3]}),
+        ({"episode": 3}, {"$in": [2, 3]}),
+        ({"part": "1"}, 3),
+        ({"summary_level": 2}, 2),
+    ],
+)
+def test_get_summaries_implicitly_narrows_summary_level(
+    args: dict[str, Any], expected_level_filter: Any
+) -> None:
+    engine = make_engine()
+    captured: list[dict[str, Any]] = []
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, Any]:
+            captured.append(kwargs)
+            return {"documents": [], "metadatas": []}
+
+    engine.collection = FakeCollection()
+    get_summaries(engine, GetSummariesInput.model_validate(args))
+
+    where = captured[0]["where"]
+    if "episode" in args or "part" in args:
+        assert where["$and"][0] == {"summary_level": expected_level_filter}
+    else:
+        assert where == {"summary_level": expected_level_filter}
+
+
+def test_get_summaries_warns_when_no_documents_match() -> None:
+    engine = make_engine()
+
+    class FakeCollection:
+        def get(self, **kwargs: Any) -> dict[str, Any]:
+            return {"documents": [], "metadatas": []}
+
+    engine.collection = FakeCollection()
+    result = get_summaries(engine, GetSummariesInput(arc_id="999"))
+
+    assert result.candidates == []
+    assert result.warnings == ["no summaries matched the given filters"]
+    assert result.metadata["total_matched"] == 0
+    assert result.metadata["truncated"] is False
 
 
 def test_get_scene_returns_exact_source_text_and_structured_errors(tmp_path: Path) -> None:
@@ -282,17 +417,20 @@ def test_build_query_toolset_registers_pydantic_schema_tools() -> None:
     tools = request_parameters.function_tools
     by_name = {tool.name: tool for tool in tools}
     assert set(by_name) == {
-        "search_raw",
-        "search_summaries",
+        "vector_search_raw",
+        "vector_search_summaries",
+        "get_summaries",
         "get_scene",
         "lookup_glossary",
         "get_state",
         "count_dialogue",
     }
-    search_raw_schema = by_name["search_raw"].parameters_json_schema
-    assert {"query", "top_k", "scene_start", "scene_end"}.issubset(search_raw_schema["properties"])
-    assert search_raw_schema["properties"]["top_k"]["minimum"] == 1
-    assert "OR semantics" in search_raw_schema["properties"]["speakers"]["description"]
+    vector_search_raw_schema = by_name["vector_search_raw"].parameters_json_schema
+    assert {"query", "top_k", "scene_start", "scene_end"}.issubset(
+        vector_search_raw_schema["properties"]
+    )
+    assert vector_search_raw_schema["properties"]["top_k"]["minimum"] == 1
+    assert "OR semantics" in vector_search_raw_schema["properties"]["speakers"]["description"]
     get_state_schema = by_name["get_state"].parameters_json_schema
     assert {"arc_id", "as_of_episode", "subject", "predicate", "target"}.issubset(
         get_state_schema["properties"]
@@ -300,7 +438,9 @@ def test_build_query_toolset_registers_pydantic_schema_tools() -> None:
     count_dialogue_schema = by_name["count_dialogue"].parameters_json_schema
     assert {"speaker", "arc_id", "episode", "part"}.issubset(count_dialogue_schema["properties"])
     assert set(QUERY_TOOL_REGISTRY) == set(by_name)
-    assert QUERY_TOOL_REGISTRY["search_raw"].input_model is SearchRawInput
+    assert QUERY_TOOL_REGISTRY["vector_search_raw"].input_model is SearchRawInput
+    assert QUERY_TOOL_REGISTRY["vector_search_summaries"].input_model is SearchSummariesInput
+    assert QUERY_TOOL_REGISTRY["get_summaries"].input_model is GetSummariesInput
     assert QUERY_TOOL_REGISTRY["get_state"].input_model is GetStateInput
     assert QUERY_TOOL_REGISTRY["count_dialogue"].input_model is CountDialogueInput
 

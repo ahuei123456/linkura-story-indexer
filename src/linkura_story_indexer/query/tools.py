@@ -52,6 +52,33 @@ class SearchSummariesInput(BaseModel):
     arc_id: str | None = None
 
 
+class GetSummariesInput(BaseModel):
+    summary_level: Literal[1, 2, 3] | None = None
+    arc_id: str | None = None
+    story_type: str | None = None
+    episode: int | None = Field(default=None, ge=1)
+    part: str | None = None
+    limit: int = Field(20, ge=1, le=100)
+
+    @field_validator("arc_id", "story_type", "part")
+    @classmethod
+    def _strip_scope_filter(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("scope filters must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_location_filters(self) -> GetSummariesInput:
+        if self.episode is not None and self.summary_level == 1:
+            raise ValueError("episode cannot be combined with summary_level 1")
+        if self.part is not None and self.summary_level in {1, 2}:
+            raise ValueError("part cannot be combined with summary_level 1 or 2")
+        return self
+
+
 class GetSceneInput(BaseModel):
     file_path: str = Field(..., min_length=1)
     scene_index: int = Field(..., ge=0)
@@ -261,7 +288,8 @@ def _summary_where(engine: StoryQueryEngine, args: SearchSummariesInput) -> dict
     return engine._and_where(filters)
 
 
-def search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
+def vector_search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
+    """Run hybrid vector + lexical search over raw source scenes."""
     where, warnings, empty = _raw_where(engine, args)
     if empty:
         return ToolResult(warnings=warnings, metadata={"where": where})
@@ -284,7 +312,8 @@ def search_raw(engine: StoryQueryEngine, args: SearchRawInput) -> ToolResult:
     )
 
 
-def search_summaries(engine: StoryQueryEngine, args: SearchSummariesInput) -> ToolResult:
+def vector_search_summaries(engine: StoryQueryEngine, args: SearchSummariesInput) -> ToolResult:
+    """Run hybrid vector + lexical search over generated summaries."""
     where = _summary_where(engine, args)
     retrieval = engine.retrieve_summary_nodes_with_trace(
         args.query,
@@ -301,6 +330,83 @@ def search_summaries(engine: StoryQueryEngine, args: SearchSummariesInput) -> To
         ],
         trace_stages=retrieval.stages,
         metadata={"where": where},
+    )
+
+
+def _summary_get_where(
+    engine: StoryQueryEngine,
+    args: GetSummariesInput,
+) -> dict[str, Any] | None:
+    if args.summary_level is not None:
+        summary_level_filter: Any = args.summary_level
+    elif args.part is not None:
+        summary_level_filter = 3
+    elif args.episode is not None:
+        summary_level_filter = {"$in": [2, 3]}
+    else:
+        summary_level_filter = {"$in": [1, 2, 3]}
+
+    filters: list[dict[str, Any]] = [{"summary_level": summary_level_filter}]
+    if args.arc_id is not None:
+        filters.append({"arc_id": args.arc_id})
+    if args.story_type is not None:
+        filters.append({"story_type": args.story_type})
+    if args.episode is not None:
+        filters.append({"episode_number": args.episode})
+    if args.part is not None:
+        filters.append({"part_name": args.part})
+    return engine._and_where(filters)
+
+
+def get_summaries(engine: StoryQueryEngine, args: GetSummariesInput) -> ToolResult:
+    """Fetch stored year, episode, or part summaries by known story location."""
+    where = _summary_get_where(engine, args)
+    collection = getattr(engine, "collection", None)
+    collection_get = getattr(collection, "get", None)
+    if not callable(collection_get):
+        return ToolResult(
+            errors=["summary lookup unavailable: collection has no get method"],
+            metadata={"where": where, "total_matched": 0, "truncated": False},
+        )
+
+    typed_collection_get = cast(Callable[..., dict[str, Any]], collection_get)
+    results = typed_collection_get(where=where, include=["documents", "metadatas"])
+    documents = results.get("documents") or []
+    metadatas = results.get("metadatas") or []
+    nodes: list[Node] = [
+        (document, dict(metadata or {}))
+        for document, metadata in zip(documents, metadatas, strict=False)
+    ]
+
+    def sort_key(node: Node) -> tuple[int, int]:
+        metadata = node[1]
+        summary_level = metadata.get("summary_level")
+        story_order = metadata.get("story_order", metadata.get("canonical_story_order"))
+        return (
+            summary_level if isinstance(summary_level, int) else 0,
+            story_order if isinstance(story_order, int) else 0,
+        )
+
+    nodes.sort(key=sort_key)
+    total_matched = len(nodes)
+    truncated = total_matched > args.limit
+    warnings: list[str] = []
+    if truncated:
+        warnings.append(f"summaries truncated to limit {args.limit} from {total_matched} matches")
+    if not nodes:
+        warnings.append("no summaries matched the given filters")
+
+    return ToolResult(
+        candidates=[
+            _candidate_from_node(engine, node, rank=rank)
+            for rank, node in enumerate(nodes[: args.limit], start=1)
+        ],
+        warnings=warnings,
+        metadata={
+            "where": where,
+            "total_matched": total_matched,
+            "truncated": truncated,
+        },
     )
 
 
@@ -468,23 +574,31 @@ def count_dialogue(engine: StoryQueryEngine, args: CountDialogueInput) -> CountD
 def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
     toolset = FunctionToolset()
 
-    def search_raw_tool(args: SearchRawInput) -> ToolResult:
-        """Search raw source scenes for exact evidence, dialogue, and scene-level details.
+    def vector_search_raw_tool(args: SearchRawInput) -> ToolResult:
+        """Run hybrid vector + lexical search over raw source scenes.
 
         Prefer this over summaries when the user asks about specific lines, who said something,
         what happened in a scene, or needs citations to raw story text. Use speaker filters as
         an OR-union when narrowing to scenes involving any listed speaker.
         """
-        return search_raw(engine, args)
+        return vector_search_raw(engine, args)
 
-    def search_summaries_tool(args: SearchSummariesInput) -> ToolResult:
-        """Search indexed year, episode, or part summaries for broad narrative context.
+    def vector_search_summaries_tool(args: SearchSummariesInput) -> ToolResult:
+        """Run hybrid vector + lexical search over indexed summaries for topical context.
 
-        Prefer this when the user asks for arc-level, episode-level, or part-level overview
-        information rather than exact quoted evidence. The summary-level and arc filters are
-        enforced by the retrieval query.
+        Prefer this when the user wants to locate summaries by topic rather than by a known story
+        location. The summary-level and arc filters are enforced by the retrieval query.
         """
-        return search_summaries(engine, args)
+        return vector_search_summaries(engine, args)
+
+    def get_summaries_tool(args: GetSummariesInput) -> ToolResult:
+        """Directly fetch stored summaries by known year, episode, or part location.
+
+        Use this for recap or summarize questions when the arc, episode number, or part name is
+        known. It performs no vector search; use vector_search_summaries for topical discovery.
+        Pass story_type when Main and Side episodes share the same episode number.
+        """
+        return get_summaries(engine, args)
 
     def get_scene_tool(args: GetSceneInput) -> ToolResult:
         """Fetch one exact raw source scene by file path and scene index.
@@ -525,8 +639,9 @@ def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
         """
         return count_dialogue(engine, args)
 
-    toolset.add_function(search_raw_tool, name="search_raw")
-    toolset.add_function(search_summaries_tool, name="search_summaries")
+    toolset.add_function(vector_search_raw_tool, name="vector_search_raw")
+    toolset.add_function(vector_search_summaries_tool, name="vector_search_summaries")
+    toolset.add_function(get_summaries_tool, name="get_summaries")
     toolset.add_function(get_scene_tool, name="get_scene")
     toolset.add_function(lookup_glossary_tool, name="lookup_glossary")
     toolset.add_function(get_state_tool, name="get_state")
@@ -534,12 +649,16 @@ def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
     return toolset
 
 
-def _dispatch_search_raw(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
-    return search_raw(engine, cast(SearchRawInput, args))
+def _dispatch_vector_search_raw(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return vector_search_raw(engine, cast(SearchRawInput, args))
 
 
-def _dispatch_search_summaries(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
-    return search_summaries(engine, cast(SearchSummariesInput, args))
+def _dispatch_vector_search_summaries(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return vector_search_summaries(engine, cast(SearchSummariesInput, args))
+
+
+def _dispatch_get_summaries(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    return get_summaries(engine, cast(GetSummariesInput, args))
 
 
 def _dispatch_get_scene(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
@@ -633,22 +752,32 @@ def _dispatch_count_dialogue(engine: StoryQueryEngine, args: BaseModel) -> ToolR
 
 
 QUERY_TOOL_REGISTRY: dict[str, QueryToolSpec] = {
-    "search_raw": QueryToolSpec(
-        name="search_raw",
+    "vector_search_raw": QueryToolSpec(
+        name="vector_search_raw",
         input_model=SearchRawInput,
-        dispatcher=_dispatch_search_raw,
+        dispatcher=_dispatch_vector_search_raw,
         description=(
-            "Search raw source scenes for exact evidence, dialogue, scene-level details, "
-            "and citation-backed answers."
+            "Run hybrid vector + lexical search over raw source scenes for exact evidence, "
+            "dialogue, scene-level details, and citation-backed answers."
         ),
     ),
-    "search_summaries": QueryToolSpec(
-        name="search_summaries",
+    "vector_search_summaries": QueryToolSpec(
+        name="vector_search_summaries",
         input_model=SearchSummariesInput,
-        dispatcher=_dispatch_search_summaries,
+        dispatcher=_dispatch_vector_search_summaries,
         description=(
-            "Search year, episode, or part summaries for broad narrative context rather "
-            "than exact source evidence."
+            "Run hybrid vector + lexical search over year, episode, or part summaries to locate "
+            "topical narrative context rather than exact source evidence."
+        ),
+    ),
+    "get_summaries": QueryToolSpec(
+        name="get_summaries",
+        input_model=GetSummariesInput,
+        dispatcher=_dispatch_get_summaries,
+        description=(
+            "Directly fetch stored year, episode, or part summaries by arc, episode number, or "
+            "part name with no vector search; use for summarize or recap questions where the "
+            "location is known. Pass story_type to disambiguate Main and Side episode numbers."
         ),
     ),
     "get_scene": QueryToolSpec(

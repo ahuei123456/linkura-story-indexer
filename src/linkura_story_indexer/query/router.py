@@ -63,7 +63,7 @@ def _fallback_decision(
     validation_errors: list[str],
 ) -> RouterDecision:
     return RouterDecision(
-        tool_name="search_raw",
+        tool_name="vector_search_raw",
         validated_args=SearchRawInput(query=question, top_k=final_top_k),
         raw_output=raw_output,
         fallback_used=True,
@@ -194,7 +194,7 @@ def _story_location_catalog(engine: Any | None) -> str:
     lines.append(
         "When the arc is known, only pass an episode filter if the requested episode appears "
         "in this catalog. If the user asks for an unavailable episode, keep the original "
-        "episode wording in query and use broader search_raw filters such as arc_id only."
+        "episode wording in query and use broader vector_search_raw filters such as arc_id only."
     )
     return "\n".join(lines)
 
@@ -204,20 +204,21 @@ def _router_instructions_from_catalog(story_location_catalog: str) -> str:
         "Select exactly one query tool for the user's question. "
         "Return only the tool name and arguments matching that tool's schema. "
         "Do not invent tools.\n\n"
-        "Default to search_raw for normal story questions, especially questions that ask "
+        "Default to vector_search_raw for normal story questions, especially questions that ask "
         "what happened, how something happened, who said, did, knew, or felt something, "
-        "where evidence comes from, or anything requiring citations. Use search_raw when "
+        "where evidence comes from, or anything requiring citations. Use vector_search_raw when "
         "exact evidence, dialogue, speaker-specific facts, or scene-level details are "
         "needed.\n\n"
         "Story location hints: any 3-digit cardinal or ordinal term, year, or arc phrase "
         "maps to that exact arc_id, such as '103rd term' -> arc_id='103', "
         "'104 term' -> arc_id='104', and 'Year 105' -> arc_id='105'. "
         "Phrases like 'episode 1', 'ep 1', or '第1話' map to episode=1. "
-        "If the question gives an arc or term and episode but does not provide both "
-        "file_path and zero-based scene_index, use search_raw with arc_id and episode "
-        "filters.\n\n"
-        "Use search_summaries only for broad recap or overview questions where exact "
-        "source evidence is less important. Use get_scene only when both file_path and "
+        "If the question gives an arc or term and episode but asks what happened or needs "
+        "exact evidence, use vector_search_raw with arc_id and episode filters. For a recap "
+        "of a known year, episode, or part, MUST use get_summaries with location filters and no "
+        "vector search (for example, episode 3 means arc_id plus episode=3). Use "
+        "vector_search_summaries only to locate summaries by topic when the story location is "
+        "not known. Use get_scene only when both file_path and "
         "zero-based scene_index are explicitly known from the user or a previous retrieved "
         "result. Use lookup_glossary only for direct glossary, translation, or term "
         "resolution questions, not when a glossary term appears inside a broader story "
@@ -226,17 +227,16 @@ def _router_instructions_from_catalog(story_location_catalog: str) -> str:
         "point in the story, such as roles, aliases, locations, relationships, or status, "
         "optionally as of a specific episode. Use count_dialogue for quantitative questions "
         "such as how many times a speaker talks in a year, episode, or part; its SQL count is "
-        "exact, so never answer counting questions with search_raw.\n\n"
+        "exact, so never answer counting questions with vector_search_raw.\n\n"
         "Examples:\n"
         "Question: what happened in episode 13 of the 103rd term\n"
-        "Output: tool_name='search_raw', args={'query':'what happened','arc_id':'103',"
+        "Output: tool_name='vector_search_raw', args={'query':'what happened','arc_id':'103',"
         "'episode':13,'top_k':8}\n"
         "Question: how did Kosuzu join the school idol club at episode 1 of the 104th term\n"
-        "Output: tool_name='search_raw', args={'query':'how did Kosuzu join the school "
+        "Output: tool_name='vector_search_raw', args={'query':'how did Kosuzu join the school "
         "idol club','arc_id':'104','episode':1,'top_k':8}\n"
         "Question: summarize the 104th term\n"
-        "Output: tool_name='search_summaries', args={'query':'summarize the 104th "
-        "term','arc_id':'104','summary_level':1,'top_k':8}\n"
+        "Output: tool_name='get_summaries', args={'arc_id':'104','summary_level':1}\n"
         "Question: resolve the glossary term 日野下花帆\n"
         "Output: tool_name='lookup_glossary', args={'term':'日野下花帆'}\n\n"
         f"{story_location_catalog}\n\n"
@@ -349,7 +349,7 @@ class QueryRouter:
 class FixtureQueryRouter(QueryRouter):
     def __init__(
         self,
-        tool_name: str = "search_raw",
+        tool_name: str = "vector_search_raw",
         args: dict[str, Any] | None = None,
         *,
         model_name: str = "fixture-router",

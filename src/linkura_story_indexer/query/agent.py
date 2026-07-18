@@ -152,10 +152,12 @@ def _agent_instructions(engine: Any | None = None) -> str:
         "- For Japanese character, unit, location, or story-specific terms, call "
         "lookup_glossary first when the term may be ambiguous; use its canonical term or "
         "translation in the next search.\n"
-        "- Use search_raw for exact dialogue and scene evidence. After search_raw identifies "
-        "a precise file_path and scene_index, use get_scene for a focused follow-up when the "
+        "- Use vector_search_raw for exact dialogue and scene evidence. After vector_search_raw "
+        "identifies a precise file_path and scene_index, use get_scene for a focused follow-up when the "
         "answer depends on that exact scene.\n"
-        "- Use search_summaries only for broad arc, episode, or part overviews.\n"
+        "- For the summary or recap of a specific year, episode, or part, MUST call get_summaries "
+        "with location filters (for example, episode 3 means arc_id plus episode=3). Do not call "
+        "vector_search_summaries for a known location; use it only to locate summaries by topic.\n"
         "- Use get_state for point-in-time roles, relationships, aliases, status, locations, "
         "or honorific facts; provide as_of_episode when the question specifies a time.\n"
         "- Quantitative rule: counting questions MUST call count_dialogue. Its SQL result is "
@@ -246,7 +248,7 @@ class QueryAgent:
         final_top_k: int,
         recorder: list[AgentToolCall],
     ) -> None:
-        spec = QUERY_TOOL_REGISTRY["search_raw"]
+        spec = QUERY_TOOL_REGISTRY["vector_search_raw"]
         args = SearchRawInput(query=question, top_k=final_top_k)
         step = len(recorder) + 1
         try:
