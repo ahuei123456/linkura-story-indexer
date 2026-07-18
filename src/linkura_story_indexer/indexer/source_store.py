@@ -441,6 +441,30 @@ class SourceRecordStore:
                 ),
             )
 
+    def max_story_order(self, *, arc_id: str, episode: int | None = None) -> int | None:
+        """Returns the largest canonical story order among matching persisted scenes."""
+        filters = ["json_extract(metadata_json, '$.arc_id') = ?"]
+        params: list[Any] = [arc_id]
+        if episode is not None:
+            filters.append("json_extract(metadata_json, '$.episode_number') = ?")
+            params.append(episode)
+        where = " AND ".join(filters)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT MAX(COALESCE(
+                    json_extract(metadata_json, '$.story_order'),
+                    json_extract(metadata_json, '$.canonical_story_order')
+                )) AS max_order
+                FROM source_scenes
+                WHERE {where}
+                """,
+                params,
+            ).fetchone()
+        if row is None or row["max_order"] is None:
+            return None
+        return int(row["max_order"])
+
     def chunk_ids_for_speaker(self, speaker: str) -> list[str]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -483,12 +507,24 @@ class SourceRecordStore:
         speaker: str,
         *,
         parent_part_id: str | None = None,
+        arc_id: str | None = None,
+        episode: int | None = None,
+        part: str | None = None,
     ) -> int:
         filters = ["ts.speaker = ?"]
         params: list[Any] = [speaker]
         if parent_part_id is not None:
             filters.append("s.parent_part_id = ?")
             params.append(parent_part_id)
+        if arc_id is not None:
+            filters.append("json_extract(s.metadata_json, '$.arc_id') = ?")
+            params.append(arc_id)
+        if episode is not None:
+            filters.append("json_extract(s.metadata_json, '$.episode_number') = ?")
+            params.append(episode)
+        if part is not None:
+            filters.append("json_extract(s.metadata_json, '$.part_name') = ?")
+            params.append(part)
         where = " AND ".join(filters)
         with self._connect() as connection:
             row = connection.execute(

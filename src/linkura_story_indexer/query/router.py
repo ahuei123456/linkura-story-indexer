@@ -172,7 +172,11 @@ def _story_location_catalog(engine: Any | None) -> str:
         arc_id = metadata.get("arc_id")
         story_type = metadata.get("story_type")
         episode = metadata.get("episode_number")
-        if not isinstance(arc_id, str) or not isinstance(story_type, str) or not isinstance(episode, int):
+        if (
+            not isinstance(arc_id, str)
+            or not isinstance(story_type, str)
+            or not isinstance(episode, int)
+        ):
             continue
         episodes_by_arc.setdefault((arc_id, story_type), set()).add(episode)
 
@@ -184,7 +188,9 @@ def _story_location_catalog(engine: Any | None) -> str:
         "for numbered main story entries:"
     ]
     for (arc_id, story_type), episodes in sorted(episodes_by_arc.items()):
-        lines.append(f"- arc_id={arc_id}, story_type={story_type}: episodes {_compressed_numbers(episodes)}")
+        lines.append(
+            f"- arc_id={arc_id}, story_type={story_type}: episodes {_compressed_numbers(episodes)}"
+        )
     lines.append(
         "When the arc is known, only pass an episode filter if the requested episode appears "
         "in this catalog. If the user asks for an unavailable episode, keep the original "
@@ -216,6 +222,11 @@ def _router_instructions_from_catalog(story_location_catalog: str) -> str:
         "result. Use lookup_glossary only for direct glossary, translation, or term "
         "resolution questions, not when a glossary term appears inside a broader story "
         "question.\n\n"
+        "Use get_state for questions about what is true about a character or the world at a "
+        "point in the story, such as roles, aliases, locations, relationships, or status, "
+        "optionally as of a specific episode. Use count_dialogue for quantitative questions "
+        "such as how many times a speaker talks in a year, episode, or part; its SQL count is "
+        "exact, so never answer counting questions with search_raw.\n\n"
         "Examples:\n"
         "Question: what happened in episode 13 of the 103rd term\n"
         "Output: tool_name='search_raw', args={'query':'what happened','arc_id':'103',"

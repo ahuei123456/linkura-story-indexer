@@ -37,9 +37,7 @@ def test_source_store_persists_turns_beats_and_chunk_speaker_mapping(tmp_path: P
     store.replace_all(raw_nodes, chunks)
 
     assert store.chunk_ids_for_speaker("花帆") == first_kaho_chunks
-    assert store.chunk_ids_for_speaker("さやか") == [
-        "chunk:103|Main|第1話『花咲きたい！』|1:0-1"
-    ]
+    assert store.chunk_ids_for_speaker("さやか") == ["chunk:103|Main|第1話『花咲きたい！』|1:0-1"]
     assert store.turns_matching_text("行こう")[0]["speaker"] == "UNKNOWN"
     assert store.count_turns("花帆") == 1
 
@@ -167,3 +165,61 @@ def test_source_store_backfills_speaker_mapping_for_existing_turns(tmp_path: Pat
     assert store.chunk_ids_for_speaker("梢") == ["chunk:legacy:0-0"]
     assert store.chunk_ids_for_speaker("慈") == ["chunk:legacy:0-0"]
     assert store.count_turns("梢") == 1
+
+
+def _scoped_fixture_store(tmp_path: Path) -> SourceRecordStore:
+    story_root = tmp_path / "story"
+    fixture_files = [
+        (
+            "103/第1話『花咲きたい！』/1.md",
+            1,
+            "花帆: A\nさやか: a\n---\n梢＆慈: B\n花帆: b\n---\n全員: C\nさやか: c",
+        ),
+        ("103/第1話『花咲きたい！』/2.md", 1, "花帆: G\nさやか: g"),
+        ("103/第2話『つづき』/1.md", 2, "花帆: E\nさやか: e"),
+        ("104/第1話『新学期』/1.md", 1, "花帆: F\nさやか: f"),
+    ]
+
+    raw_nodes = []
+    story_order = 10
+    for relative_path, episode_number, content in fixture_files:
+        file_path = _write_story_file(story_root, relative_path, content)
+        for node in StoryProcessor.process_file(file_path):
+            node.metadata.episode_number = episode_number
+            node.metadata.story_order = story_order
+            node.metadata.canonical_story_order = story_order
+            story_order += 1
+            raw_nodes.append(node)
+
+    chunks = build_retrieval_chunks(raw_nodes, min_chars=1, target_chars=500, max_chars=500)
+    store = SourceRecordStore(tmp_path / "source.db")
+    store.replace_all(raw_nodes, chunks)
+    return store
+
+
+def test_count_turns_supports_arc_episode_and_part_scopes(tmp_path: Path) -> None:
+    store = _scoped_fixture_store(tmp_path)
+
+    assert store.count_turns("花帆") == 5
+    assert store.count_turns("花帆", arc_id="103") == 4
+    assert store.count_turns("花帆", arc_id="103", episode=1) == 3
+    assert store.count_turns("花帆", arc_id="103", episode=1, part="2") == 1
+    assert store.count_turns("花帆", part="2") == 1
+    assert store.count_turns("花帆", arc_id="103", episode=2) == 1
+    assert store.count_turns("花帆", arc_id="104") == 1
+    assert store.count_turns("花帆", arc_id="999") == 0
+
+    assert store.count_turns("梢", arc_id="103") == 1
+    assert store.count_turns("慈", arc_id="103") == 1
+    assert store.count_turns("全員", arc_id="103") == 1
+
+
+def test_max_story_order_resolves_arc_and_episode_scopes(tmp_path: Path) -> None:
+    store = _scoped_fixture_store(tmp_path)
+
+    assert store.max_story_order(arc_id="103") == 14
+    assert store.max_story_order(arc_id="103", episode=1) == 13
+    assert store.max_story_order(arc_id="103", episode=2) == 14
+    assert store.max_story_order(arc_id="104") == 15
+    assert store.max_story_order(arc_id="999") is None
+    assert store.max_story_order(arc_id="103", episode=9) is None

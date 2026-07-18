@@ -4,12 +4,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_ai import FunctionToolset
 
 from linkura_story_indexer.eval.models import SourceIdentity, StageName, StageTrace
+from linkura_story_indexer.indexer.parser import StoryParser
 from linkura_story_indexer.lexical import glossary_aliases_for
-from linkura_story_indexer.query.engine import Node, StoryQueryEngine
+from linkura_story_indexer.models.state import StateFact, StatePredicate
+from linkura_story_indexer.query.engine import (
+    Node,
+    StoryQueryEngine,
+    filter_state_facts_as_of,
+)
 
 
 class SearchRawInput(BaseModel):
@@ -53,6 +59,88 @@ class GetSceneInput(BaseModel):
 
 class LookupGlossaryInput(BaseModel):
     term: str = Field(..., min_length=1)
+
+
+class GetStateInput(BaseModel):
+    arc_id: str = Field(..., min_length=1)
+    as_of_episode: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "When set, only facts active at the end of this episode are returned under the "
+            "ledger's half-open [valid_from, valid_to) validity interval."
+        ),
+    )
+    subject: str | None = None
+    predicate: StatePredicate | None = None
+    target: str | None = None
+
+    @field_validator("arc_id", "subject", "target")
+    @classmethod
+    def _reject_blank_identifiers(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("identifier filters must not be blank")
+        return stripped
+
+
+class GetStateResult(BaseModel):
+    arc_id: str
+    as_of_episode: int | None = None
+    as_of_story_order: int | None = None
+    facts: list[StateFact] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class CountDialogueInput(BaseModel):
+    speaker: str = Field(..., min_length=1)
+    arc_id: str | None = None
+    episode: int | None = Field(default=None, ge=1)
+    part: str | None = None
+
+    @field_validator("speaker")
+    @classmethod
+    def _normalize_single_speaker(cls, value: str) -> str:
+        tokens, _ = StoryParser.parse_speaker_label(value)
+        if not tokens:
+            raise ValueError("speaker must not be blank")
+        if len(tokens) > 1:
+            raise ValueError(
+                "speaker must be a single name; composite labels such as 梢＆慈 are stored "
+                "per named speaker, so query each speaker separately"
+            )
+        return tokens[0]
+
+    @field_validator("arc_id", "part")
+    @classmethod
+    def _reject_blank_scope(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("scope filters must not be blank")
+        return stripped
+
+
+DIALOGUE_COUNTING_UNIT = (
+    "distinct structured dialogue turns; a composite turn such as 梢＆慈 counts once for each "
+    "named speaker it lists, and a turn attributed only to a collective label such as 全員 "
+    "counts only for that collective label, never once per known character"
+)
+
+
+class CountDialogueResult(BaseModel):
+    speaker: str
+    arc_id: str | None = None
+    episode: int | None = None
+    part: str | None = None
+    count: int = Field(0, ge=0)
+    counting_unit: str = DIALOGUE_COUNTING_UNIT
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class ToolCandidate(BaseModel):
@@ -281,6 +369,102 @@ def lookup_glossary(engine: StoryQueryEngine, args: LookupGlossaryInput) -> Glos
     )
 
 
+def get_state(engine: StoryQueryEngine, args: GetStateInput) -> GetStateResult:
+    warnings: list[str] = []
+    ledger_facts = engine._state_ledger_facts()
+    if not ledger_facts:
+        warnings.append("state ledger is empty or unavailable")
+    facts = [fact for fact in ledger_facts if fact.get("arc") == args.arc_id]
+
+    as_of_story_order: int | None = None
+    if args.as_of_episode is not None:
+        source_store = getattr(engine, "source_store", None)
+        max_story_order = getattr(source_store, "max_story_order", None)
+        if not callable(max_story_order):
+            return GetStateResult(
+                arc_id=args.arc_id,
+                as_of_episode=args.as_of_episode,
+                warnings=warnings,
+                errors=["state lookup unavailable: source store has no max_story_order method"],
+            )
+        typed_max_story_order = cast(Callable[..., int | None], max_story_order)
+        as_of_story_order = typed_max_story_order(arc_id=args.arc_id, episode=args.as_of_episode)
+        if as_of_story_order is None:
+            return GetStateResult(
+                arc_id=args.arc_id,
+                as_of_episode=args.as_of_episode,
+                warnings=warnings,
+                errors=[
+                    f"no source scenes found for arc {args.arc_id} episode {args.as_of_episode}"
+                ],
+            )
+        facts = filter_state_facts_as_of(facts, as_of_story_order)
+
+    if args.subject is not None:
+        facts = [fact for fact in facts if fact.get("subject") == args.subject]
+    if args.predicate is not None:
+        facts = [fact for fact in facts if fact.get("predicate") == args.predicate]
+    if args.target is not None:
+        facts = [fact for fact in facts if fact.get("target") == args.target]
+
+    validated_facts: list[StateFact] = []
+    for fact in facts:
+        try:
+            validated_facts.append(StateFact.model_validate(fact))
+        except ValidationError:
+            warnings.append(
+                "skipped ledger fact without full source provenance: "
+                f"subject={fact.get('subject')!r} predicate={fact.get('predicate')!r}"
+            )
+
+    validated_facts.sort(
+        key=lambda fact: (
+            fact.valid_from,
+            fact.episode,
+            fact.part,
+            fact.scene_index,
+            fact.subject,
+            fact.predicate,
+            fact.target or "",
+            fact.object,
+        )
+    )
+    return GetStateResult(
+        arc_id=args.arc_id,
+        as_of_episode=args.as_of_episode,
+        as_of_story_order=as_of_story_order,
+        facts=validated_facts,
+        warnings=warnings,
+    )
+
+
+def count_dialogue(engine: StoryQueryEngine, args: CountDialogueInput) -> CountDialogueResult:
+    source_store = getattr(engine, "source_store", None)
+    count_turns = getattr(source_store, "count_turns", None)
+    if not callable(count_turns):
+        return CountDialogueResult(
+            speaker=args.speaker,
+            arc_id=args.arc_id,
+            episode=args.episode,
+            part=args.part,
+            errors=["dialogue counting unavailable: source store has no count_turns method"],
+        )
+    typed_count_turns = cast(Callable[..., int], count_turns)
+    count = typed_count_turns(
+        args.speaker,
+        arc_id=args.arc_id,
+        episode=args.episode,
+        part=args.part,
+    )
+    return CountDialogueResult(
+        speaker=args.speaker,
+        arc_id=args.arc_id,
+        episode=args.episode,
+        part=args.part,
+        count=count,
+    )
+
+
 def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
     toolset = FunctionToolset()
 
@@ -320,10 +504,33 @@ def build_query_toolset(engine: StoryQueryEngine) -> FunctionToolset:
         """
         return lookup_glossary(engine, args)
 
+    def get_state_tool(args: GetStateInput) -> GetStateResult:
+        """Look up deterministic source-backed world-state facts for one arc.
+
+        Prefer this over text search when the question asks what is true about a character or
+        the world at a point in the story: roles, aliases, locations, relationships, group
+        membership, goals, status, possessions, or honorifics. Facts come from the temporal
+        State Ledger with exact source provenance and no model inference. Set as_of_episode to
+        scope results to facts still active at the end of that episode.
+        """
+        return get_state(engine, args)
+
+    def count_dialogue_tool(args: CountDialogueInput) -> CountDialogueResult:
+        """Count exactly how many structured dialogue turns one speaker has.
+
+        Prefer this over searching text and estimating whenever the question is quantitative,
+        such as how many times a character speaks in a year, episode, or part. The count is
+        computed in SQL over the structured dialogue table, so it is exact and deterministic;
+        never answer counting questions from retrieved prose when this tool applies.
+        """
+        return count_dialogue(engine, args)
+
     toolset.add_function(search_raw_tool, name="search_raw")
     toolset.add_function(search_summaries_tool, name="search_summaries")
     toolset.add_function(get_scene_tool, name="get_scene")
     toolset.add_function(lookup_glossary_tool, name="lookup_glossary")
+    toolset.add_function(get_state_tool, name="get_state")
+    toolset.add_function(count_dialogue_tool, name="count_dialogue")
     return toolset
 
 
@@ -361,6 +568,70 @@ def _dispatch_lookup_glossary(engine: StoryQueryEngine, args: BaseModel) -> Tool
     )
 
 
+def _state_fact_line(fact: StateFact) -> str:
+    target = f" -> {fact.target}" if fact.target else ""
+    validity = (
+        f"valid from order {fact.valid_from}, open"
+        if fact.valid_to is None
+        else f"valid from order {fact.valid_from} until order {fact.valid_to}"
+    )
+    return (
+        f"- {fact.subject} {fact.predicate}{target}: {fact.object} "
+        f"({fact.arc} · {fact.episode} · Part {fact.part} · Scene {fact.scene + 1}; "
+        f"{validity}; quote: {fact.extracted_quote})"
+    )
+
+
+def _state_direct_answer(result: GetStateResult) -> str:
+    if result.errors:
+        return result.errors[0]
+    if not result.facts:
+        scope = f"arc {result.arc_id}"
+        if result.as_of_episode is not None:
+            scope += f" as of episode {result.as_of_episode}"
+        return f"No state facts matched {scope}."
+    return "\n".join(_state_fact_line(fact) for fact in result.facts)
+
+
+def _dispatch_get_state(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    result = get_state(engine, cast(GetStateInput, args))
+    return ToolResult(
+        warnings=result.warnings,
+        errors=result.errors,
+        metadata={
+            "tool_output": result.model_dump(mode="json"),
+            "direct_answer": _state_direct_answer(result),
+        },
+    )
+
+
+def _count_direct_answer(result: CountDialogueResult) -> str:
+    if result.errors:
+        return result.errors[0]
+    scope_parts = []
+    if result.arc_id is not None:
+        scope_parts.append(f"arc {result.arc_id}")
+    if result.episode is not None:
+        scope_parts.append(f"episode {result.episode}")
+    if result.part is not None:
+        scope_parts.append(f"part {result.part}")
+    scope = f" in {', '.join(scope_parts)}" if scope_parts else " across all indexed story content"
+    unit = "dialogue turn" if result.count == 1 else "dialogue turns"
+    return f"{result.speaker} has {result.count} {unit}{scope}."
+
+
+def _dispatch_count_dialogue(engine: StoryQueryEngine, args: BaseModel) -> ToolResult:
+    result = count_dialogue(engine, cast(CountDialogueInput, args))
+    return ToolResult(
+        warnings=result.warnings,
+        errors=result.errors,
+        metadata={
+            "tool_output": result.model_dump(mode="json"),
+            "direct_answer": _count_direct_answer(result),
+        },
+    )
+
+
 QUERY_TOOL_REGISTRY: dict[str, QueryToolSpec] = {
     "search_raw": QueryToolSpec(
         name="search_raw",
@@ -393,6 +664,26 @@ QUERY_TOOL_REGISTRY: dict[str, QueryToolSpec] = {
         description=(
             "Resolve a Japanese glossary term, English translation, or generated alias "
             "without performing source retrieval."
+        ),
+    ),
+    "get_state": QueryToolSpec(
+        name="get_state",
+        input_model=GetStateInput,
+        dispatcher=_dispatch_get_state,
+        description=(
+            "Look up deterministic source-backed world-state facts (roles, aliases, locations, "
+            "relationships, status) for one arc, optionally as of a specific episode, instead "
+            "of searching prose for what is true at a point in the story."
+        ),
+    ),
+    "count_dialogue": QueryToolSpec(
+        name="count_dialogue",
+        input_model=CountDialogueInput,
+        dispatcher=_dispatch_count_dialogue,
+        description=(
+            "Count exactly how many structured dialogue turns one speaker has, optionally "
+            "scoped by arc, episode, or part, using deterministic SQL counting rather than "
+            "text search for quantitative questions."
         ),
     ),
 }

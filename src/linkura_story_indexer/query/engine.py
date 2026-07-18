@@ -90,6 +90,29 @@ class RetrievalConfig:
 DEFAULT_RETRIEVAL_CONFIG = RetrievalConfig()
 
 
+def fact_valid_from(fact: dict[str, Any]) -> int:
+    value = fact.get("valid_from")
+    return int(value) if isinstance(value, int) else 0
+
+
+def fact_valid_to(fact: dict[str, Any]) -> int | None:
+    value = fact.get("valid_to")
+    return int(value) if isinstance(value, int) else None
+
+
+def filter_state_facts_as_of(
+    facts: list[dict[str, Any]],
+    story_order: int,
+) -> list[dict[str, Any]]:
+    """Returns facts active at story_order under the half-open [valid_from, valid_to) interval."""
+    active_facts = []
+    for fact in facts:
+        valid_to = fact_valid_to(fact)
+        if fact_valid_from(fact) <= story_order and (valid_to is None or story_order < valid_to):
+            active_facts.append(fact)
+    return active_facts
+
+
 @dataclass(frozen=True)
 class RetrievalTraceResult:
     nodes: list[Node]
@@ -222,14 +245,7 @@ class StoryQueryEngine:
 
         operator = analysis.temporal_constraint.operator
         if operator == "as_of":
-            active_facts = []
-            for fact in facts:
-                valid_to = self._fact_valid_to(fact)
-                if self._fact_valid_from(fact) <= story_order and (
-                    valid_to is None or story_order < valid_to
-                ):
-                    active_facts.append(fact)
-            return active_facts
+            return filter_state_facts_as_of(facts, story_order)
         if operator == "before":
             return [fact for fact in facts if self._fact_valid_from(fact) < story_order]
         if operator == "after":
@@ -244,12 +260,10 @@ class StoryQueryEngine:
         return facts
 
     def _fact_valid_from(self, fact: dict[str, Any]) -> int:
-        value = fact.get("valid_from")
-        return int(value) if isinstance(value, int) else 0
+        return fact_valid_from(fact)
 
     def _fact_valid_to(self, fact: dict[str, Any]) -> int | None:
-        value = fact.get("valid_to")
-        return int(value) if isinstance(value, int) else None
+        return fact_valid_to(fact)
 
     def _build_system_prompt(
         self,
@@ -282,9 +296,7 @@ class StoryQueryEngine:
 
         year_summary_sections: list[str] = []
         for arc_id, summary in sorted(getattr(self, "year_summaries", {}).items()):
-            citation = (
-                f"{arc_id} · Main · Episode ALL_EPISODES · Part ALL_PARTS · summary_level 1"
-            )
+            citation = f"{arc_id} · Main · Episode ALL_EPISODES · Part ALL_PARTS · summary_level 1"
             year_summary_sections.extend(
                 [
                     f"## YEAR/ARC {arc_id}",
@@ -325,10 +337,7 @@ class StoryQueryEngine:
         story_type = metadata.get("story_type", "unknown")
         episode = self._summary_episode_label(metadata)
         part = self._summary_part_label(metadata)
-        return (
-            f"{arc_id} · {story_type} · {episode} · Part {part} · "
-            f"summary_level {summary_level}"
-        )
+        return f"{arc_id} · {story_type} · {episode} · Part {part} · summary_level {summary_level}"
 
     def _summary_episode_label(self, metadata: dict[str, Any]) -> str:
         if metadata.get("summary_level") == 1:
@@ -497,7 +506,11 @@ class StoryQueryEngine:
         if temporal_filter is not None:
             filters.append(temporal_filter)
 
-        if include_scene_constraint and summary_level == 4 and analysis.scene_constraint is not None:
+        if (
+            include_scene_constraint
+            and summary_level == 4
+            and analysis.scene_constraint is not None
+        ):
             scene = analysis.scene_constraint
             filters.append({"scene_start": {"$lte": scene.end}})
             filters.append({"scene_end": {"$gte": scene.start}})
@@ -669,10 +682,12 @@ class StoryQueryEngine:
         metadatas = results.get("metadatas") or [[]]
         distances = results.get("distances") or [[]]
         output = []
-        for index, (document, metadata) in enumerate(
-            zip(documents[0], metadatas[0], strict=False)
-        ):
-            distance = distances[0][index] if distances and distances[0] and index < len(distances[0]) else None
+        for index, (document, metadata) in enumerate(zip(documents[0], metadatas[0], strict=False)):
+            distance = (
+                distances[0][index]
+                if distances and distances[0] and index < len(distances[0])
+                else None
+            )
             output.append(((document, dict(metadata or {})), distance))
         return output
 
@@ -906,7 +921,9 @@ class StoryQueryEngine:
         if level == 2:
             parent_episode_id = metadata.get("parent_episode_id")
             if isinstance(parent_episode_id, str) and parent_episode_id:
-                return self._combine_where(analysis_filter, {"parent_episode_id": parent_episode_id})
+                return self._combine_where(
+                    analysis_filter, {"parent_episode_id": parent_episode_id}
+                )
         if level == 3:
             parent_part_id = metadata.get("parent_part_id")
             if isinstance(parent_part_id, str) and parent_part_id:
@@ -947,7 +964,11 @@ class StoryQueryEngine:
         self,
         nodes: list[Node],
     ) -> list[Node]:
-        return [(document, metadata) for document, metadata in nodes if metadata.get("summary_level") == 4]
+        return [
+            (document, metadata)
+            for document, metadata in nodes
+            if metadata.get("summary_level") == 4
+        ]
 
     def _scene_span(self, metadata: dict[str, Any]) -> tuple[int, int] | None:
         scene_start = metadata.get("scene_start")
@@ -1067,9 +1088,7 @@ class StoryQueryEngine:
                     )
                 else:
                     part_nodes = self._raw_nodes_for_part(question, metadata)
-                part_cache[part_cache_key] = self._sort_raw_nodes(
-                    part_nodes
-                )
+                part_cache[part_cache_key] = self._sort_raw_nodes(part_nodes)
 
             window_start = span[0] - window
             window_end = span[1] + window
@@ -1133,8 +1152,14 @@ class StoryQueryEngine:
 
     def _query_terms(self, question: str) -> list[str]:
         terms = []
-        terms.extend(term for term in re.findall(r"[\u3040-\u30ff\u3400-\u9fff々〆〤ー]+", question) if len(term) >= 2)
-        terms.extend(term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9'_-]*", question) if len(term) >= 2)
+        terms.extend(
+            term
+            for term in re.findall(r"[\u3040-\u30ff\u3400-\u9fff々〆〤ー]+", question)
+            if len(term) >= 2
+        )
+        terms.extend(
+            term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9'_-]*", question) if len(term) >= 2
+        )
 
         unique_terms = []
         seen = set()
@@ -1188,7 +1213,10 @@ class StoryQueryEngine:
             seed_span = self._scene_span(seed_metadata)
             if seed_span is None:
                 continue
-            if candidate_span[0] <= seed_span[1] + window and candidate_span[1] >= seed_span[0] - window:
+            if (
+                candidate_span[0] <= seed_span[1] + window
+                and candidate_span[1] >= seed_span[0] - window
+            ):
                 score += 1
         return score
 
@@ -1479,7 +1507,10 @@ class StoryQueryEngine:
             seed_span = self._scene_span(seed_metadata)
             if seed_span is None:
                 continue
-            if candidate_span[0] <= seed_span[1] + window and candidate_span[1] >= seed_span[0] - window:
+            if (
+                candidate_span[0] <= seed_span[1] + window
+                and candidate_span[1] >= seed_span[0] - window
+            ):
                 return "neighbor_of", self._trace_node_id(seed_document, seed_metadata)
         return None, None
 
@@ -1669,9 +1700,7 @@ class StoryQueryEngine:
             )
         retrieved_nodes, stages = self._hybrid_retrieve_trace(
             expanded_question,
-            n_results=(
-                n_results if n_results is not None else self._config().raw_candidate_count
-            ),
+            n_results=(n_results if n_results is not None else self._config().raw_candidate_count),
             where=raw_where,
             query_embedding=query_embedding,
             dense_unavailable_reason=dense_unavailable_reason,

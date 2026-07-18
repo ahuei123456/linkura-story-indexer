@@ -12,13 +12,18 @@ from linkura_story_indexer.indexer.source_store import SourceRecordStore
 from linkura_story_indexer.query import engine as query_engine
 from linkura_story_indexer.query.engine import RetrievalConfig, StoryQueryEngine
 from linkura_story_indexer.query.tools import (
+    DIALOGUE_COUNTING_UNIT,
     QUERY_TOOL_REGISTRY,
+    CountDialogueInput,
     GetSceneInput,
+    GetStateInput,
     LookupGlossaryInput,
     SearchRawInput,
     SearchSummariesInput,
     build_query_toolset,
+    count_dialogue,
     get_scene,
+    get_state,
     lookup_glossary,
     search_raw,
     search_summaries,
@@ -93,6 +98,16 @@ def summary_node(
         (SearchSummariesInput, {"query": "x", "top_k": 0}),
         (SearchSummariesInput, {"query": "x", "top_k": 1, "summary_level": 4}),
         (GetSceneInput, {"file_path": "story.md", "scene_index": -1}),
+        (GetStateInput, {"arc_id": ""}),
+        (GetStateInput, {"arc_id": "   "}),
+        (GetStateInput, {"arc_id": "103", "as_of_episode": 0}),
+        (GetStateInput, {"arc_id": "103", "predicate": "not_a_predicate"}),
+        (GetStateInput, {"arc_id": "103", "subject": " "}),
+        (CountDialogueInput, {"speaker": ""}),
+        (CountDialogueInput, {"speaker": "   "}),
+        (CountDialogueInput, {"speaker": "梢＆慈"}),
+        (CountDialogueInput, {"speaker": "花帆", "episode": 0}),
+        (CountDialogueInput, {"speaker": "花帆", "arc_id": " "}),
     ],
 )
 def test_query_tool_inputs_reject_invalid_arguments(
@@ -142,8 +157,8 @@ def test_search_raw_returns_ranked_candidates_and_trace(monkeypatch: pytest.Monk
 
     result = search_raw(
         engine,
-            SearchRawInput(
-                query="What practice does 花帆 mention?",
+        SearchRawInput(
+            query="What practice does 花帆 mention?",
             top_k=1,
             arc_id="103",
             episode=1,
@@ -266,12 +281,265 @@ def test_build_query_toolset_registers_pydantic_schema_tools() -> None:
     assert request_parameters is not None
     tools = request_parameters.function_tools
     by_name = {tool.name: tool for tool in tools}
-    assert set(by_name) == {"search_raw", "search_summaries", "get_scene", "lookup_glossary"}
+    assert set(by_name) == {
+        "search_raw",
+        "search_summaries",
+        "get_scene",
+        "lookup_glossary",
+        "get_state",
+        "count_dialogue",
+    }
     search_raw_schema = by_name["search_raw"].parameters_json_schema
-    assert {"query", "top_k", "scene_start", "scene_end"}.issubset(
-        search_raw_schema["properties"]
-    )
+    assert {"query", "top_k", "scene_start", "scene_end"}.issubset(search_raw_schema["properties"])
     assert search_raw_schema["properties"]["top_k"]["minimum"] == 1
     assert "OR semantics" in search_raw_schema["properties"]["speakers"]["description"]
+    get_state_schema = by_name["get_state"].parameters_json_schema
+    assert {"arc_id", "as_of_episode", "subject", "predicate", "target"}.issubset(
+        get_state_schema["properties"]
+    )
+    count_dialogue_schema = by_name["count_dialogue"].parameters_json_schema
+    assert {"speaker", "arc_id", "episode", "part"}.issubset(count_dialogue_schema["properties"])
     assert set(QUERY_TOOL_REGISTRY) == set(by_name)
     assert QUERY_TOOL_REGISTRY["search_raw"].input_model is SearchRawInput
+    assert QUERY_TOOL_REGISTRY["get_state"].input_model is GetStateInput
+    assert QUERY_TOOL_REGISTRY["count_dialogue"].input_model is CountDialogueInput
+
+
+def ledger_fact(
+    *,
+    subject: str = "花帆",
+    predicate: str = "role",
+    object_: str = "school idol",
+    target: str | None = None,
+    arc: str = "103",
+    episode: str = "第1話『花咲きたい！』",
+    part: str = "1",
+    scene: int = 0,
+    valid_from: int = 0,
+    valid_to: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "subject": subject,
+        "predicate": predicate,
+        "target": target,
+        "object": object_,
+        "confidence": 0.9,
+        "extracted_quote": f"{subject}: {object_}",
+        "arc": arc,
+        "episode": episode,
+        "part": part,
+        "scene": scene,
+        "valid_from": valid_from,
+        "valid_to": valid_to,
+        "file_path": f"story/{arc}/{episode}/{part}.md",
+        "scene_index": scene,
+    }
+
+
+class FakeStoryOrderStore:
+    def __init__(self, orders: dict[tuple[str, int | None], int]) -> None:
+        self.orders = orders
+        self.calls: list[tuple[str, int | None]] = []
+
+    def max_story_order(self, *, arc_id: str, episode: int | None = None) -> int | None:
+        self.calls.append((arc_id, episode))
+        return self.orders.get((arc_id, episode))
+
+
+def test_get_state_returns_full_history_in_deterministic_order() -> None:
+    engine = make_engine()
+    newer = ledger_fact(object_="club president", valid_from=7, scene=2)
+    older = ledger_fact(object_="student", valid_from=2, valid_to=7)
+    other_arc = ledger_fact(arc="104", object_="idol", valid_from=1)
+    engine.state_ledger = {"facts": [newer, other_arc, older]}
+
+    result = get_state(engine, GetStateInput(arc_id="103"))
+
+    assert [fact.object for fact in result.facts] == ["student", "club president"]
+    assert result.as_of_story_order is None
+    assert result.errors == []
+    first = result.facts[0]
+    assert first.extracted_quote == "花帆: student"
+    assert first.file_path == "story/103/第1話『花咲きたい！』/1.md"
+    assert first.arc == "103"
+    assert first.part == "1"
+    assert first.scene_index == 0
+    assert first.confidence == 0.9
+    assert first.valid_to == 7
+
+
+def test_get_state_applies_half_open_validity_interval() -> None:
+    engine = make_engine()
+    at_boundary = ledger_fact(object_="starts at boundary", valid_from=10)
+    closed_at_boundary = ledger_fact(object_="closed at boundary", valid_from=1, valid_to=10)
+    open_ended = ledger_fact(object_="still open", valid_from=3)
+    later = ledger_fact(object_="not yet true", valid_from=11)
+    engine.state_ledger = {"facts": [at_boundary, closed_at_boundary, open_ended, later]}
+    store = FakeStoryOrderStore({("103", 2): 10})
+    engine.source_store = store
+
+    result = get_state(engine, GetStateInput(arc_id="103", as_of_episode=2))
+
+    assert result.as_of_story_order == 10
+    assert [fact.object for fact in result.facts] == ["still open", "starts at boundary"]
+    assert store.calls == [("103", 2)]
+
+
+def test_get_state_filters_subject_predicate_and_target() -> None:
+    engine = make_engine()
+    match = ledger_fact(
+        subject="さやか",
+        predicate="relationship",
+        target="花帆",
+        object_="close friend",
+    )
+    wrong_subject = ledger_fact(
+        subject="花帆",
+        predicate="relationship",
+        target="さやか",
+        object_="close friend",
+    )
+    wrong_predicate = ledger_fact(subject="さやか", predicate="status", object_="tired")
+    engine.state_ledger = {"facts": [match, wrong_subject, wrong_predicate]}
+
+    result = get_state(
+        engine,
+        GetStateInput(arc_id="103", subject="さやか", predicate="relationship", target="花帆"),
+    )
+
+    assert len(result.facts) == 1
+    assert result.facts[0].subject == "さやか"
+    assert result.facts[0].target == "花帆"
+
+
+def test_get_state_reports_unknown_scope_and_skips_invalid_facts() -> None:
+    engine = make_engine()
+    engine.state_ledger = {"facts": [ledger_fact()]}
+    engine.source_store = FakeStoryOrderStore({})
+
+    missing_scope = get_state(engine, GetStateInput(arc_id="103", as_of_episode=9))
+    assert missing_scope.errors == ["no source scenes found for arc 103 episode 9"]
+    assert missing_scope.facts == []
+
+    engine.state_ledger = {
+        "facts": [
+            {
+                "arc": "103",
+                "subject": "legacy_world_state",
+                "predicate": "summary",
+                "object": "old blob",
+                "valid_from": 0,
+                "valid_to": None,
+            }
+        ]
+    }
+    legacy = get_state(engine, GetStateInput(arc_id="103"))
+    assert legacy.facts == []
+    assert any("skipped ledger fact" in warning for warning in legacy.warnings)
+
+    engine.state_ledger = {}
+    empty = get_state(engine, GetStateInput(arc_id="103"))
+    assert empty.facts == []
+    assert "state ledger is empty or unavailable" in empty.warnings
+
+
+def test_count_dialogue_counts_exact_turns_per_scope(tmp_path: Path) -> None:
+    story_root = tmp_path / "story"
+    fixture_files = [
+        (
+            "103/第1話『花咲きたい！』/1.md",
+            1,
+            "花帆: A\nさやか: a\n---\n梢＆慈: B\n花帆: b\n---\n全員: C\nさやか: c",
+        ),
+        ("103/第2話『つづき』/1.md", 2, "花帆: E\nさやか: e"),
+        ("104/第1話『新学期』/1.md", 1, "花帆: F\nさやか: f"),
+    ]
+    raw_nodes = []
+    for relative_path, episode_number, content in fixture_files:
+        file_path = story_root / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+        for node in StoryProcessor.process_file(file_path):
+            node.metadata.episode_number = episode_number
+            raw_nodes.append(node)
+    chunks = build_retrieval_chunks(raw_nodes, min_chars=1, target_chars=500, max_chars=500)
+    store = SourceRecordStore(tmp_path / "source.db")
+    store.replace_all(raw_nodes, chunks)
+
+    engine = make_engine()
+    engine.source_store = store
+
+    unscoped = count_dialogue(engine, CountDialogueInput(speaker="花帆"))
+    assert unscoped.count == 4
+    assert unscoped.counting_unit == DIALOGUE_COUNTING_UNIT
+    assert unscoped.errors == []
+
+    arc_scoped = count_dialogue(engine, CountDialogueInput(speaker="花帆", arc_id="103"))
+    assert arc_scoped.count == 3
+
+    episode_scoped = count_dialogue(
+        engine, CountDialogueInput(speaker="花帆", arc_id="103", episode=1)
+    )
+    assert episode_scoped.count == 2
+
+    part_scoped = count_dialogue(
+        engine, CountDialogueInput(speaker="花帆", arc_id="103", episode=1, part="1")
+    )
+    assert part_scoped.count == 2
+
+    composite = count_dialogue(engine, CountDialogueInput(speaker="梢", arc_id="103"))
+    assert composite.count == 1
+
+    collective = count_dialogue(engine, CountDialogueInput(speaker="全員", arc_id="103"))
+    assert collective.count == 1
+
+    empty_scope = count_dialogue(engine, CountDialogueInput(speaker="花帆", arc_id="999"))
+    assert empty_scope.count == 0
+    assert empty_scope.errors == []
+
+
+def test_count_dialogue_normalizes_speaker_and_requires_source_store() -> None:
+    normalized = CountDialogueInput(speaker="  花帆  ")
+    assert normalized.speaker == "花帆"
+
+    engine = make_engine()
+    result = count_dialogue(engine, CountDialogueInput(speaker="花帆"))
+    assert result.count == 0
+    assert result.errors == [
+        "dialogue counting unavailable: source store has no count_turns method"
+    ]
+
+
+def test_registry_dispatches_state_and_count_tools_with_direct_answers() -> None:
+    engine = make_engine()
+    engine.state_ledger = {"facts": [ledger_fact(valid_from=4)]}
+
+    state_result = QUERY_TOOL_REGISTRY["get_state"].dispatcher(engine, GetStateInput(arc_id="103"))
+    tool_output = state_result.metadata["tool_output"]
+    assert tool_output["facts"][0]["subject"] == "花帆"
+    assert tool_output["facts"][0]["extracted_quote"] == "花帆: school idol"
+    assert "花帆 role: school idol" in state_result.metadata["direct_answer"]
+    assert "quote: 花帆: school idol" in state_result.metadata["direct_answer"]
+    assert state_result.errors == []
+
+    empty_state = QUERY_TOOL_REGISTRY["get_state"].dispatcher(engine, GetStateInput(arc_id="104"))
+    assert empty_state.metadata["direct_answer"] == "No state facts matched arc 104."
+
+    class FakeCountStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        def count_turns(self, speaker: str, **kwargs: Any) -> int:
+            self.calls.append((speaker, kwargs))
+            return 2
+
+    store = FakeCountStore()
+    engine.source_store = store
+    count_result = QUERY_TOOL_REGISTRY["count_dialogue"].dispatcher(
+        engine, CountDialogueInput(speaker="花帆", arc_id="103", episode=1)
+    )
+    assert store.calls == [("花帆", {"arc_id": "103", "episode": 1, "part": None})]
+    assert count_result.metadata["tool_output"]["count"] == 2
+    assert (
+        count_result.metadata["direct_answer"] == "花帆 has 2 dialogue turns in arc 103, episode 1."
+    )
