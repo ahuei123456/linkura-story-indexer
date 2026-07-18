@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from ..models.story import StoryMetadata, StoryNode
@@ -9,6 +10,14 @@ def _parent_ids(arc_id: str, story_type: str, episode_name: str, part_name: str)
     episode_id = f"{arc_id}|{story_type}|{episode_name}"
     part_id = f"{episode_id}|{part_name}"
     return year_id, episode_id, part_id
+
+
+def episode_number_from_names(episode_name: str, part_name: str) -> int:
+    for value in (episode_name, part_name):
+        match = re.search(r"第(\d+)話", value)
+        if match:
+            return int(match.group(1))
+    return 0
 
 
 class StoryProcessor:
@@ -27,7 +36,7 @@ class StoryProcessor:
             arc_id = parts[story_idx + 1]
             # Pattern: story/103/FolderName/FileName.md
             folder_name = parts[story_idx + 2]
-            
+
             if "～" in folder_name:
                 # Side story: folder is an Episode (e.g. ～Shades of Stars～)
                 # and file name is the Part (e.g. 第1話.md)
@@ -56,6 +65,7 @@ class StoryProcessor:
                 arc_id=arc_id,
                 story_type=story_type,
                 episode_name=ep_name,
+                episode_number=episode_number_from_names(ep_name, part_name),
                 part_name=part_name,
                 file_path=str(file_path),
                 parent_year_id=parent_year_id,
@@ -86,11 +96,11 @@ class StoryProcessor:
         """Reads a file, splits it into scenes, and returns StoryNodes."""
         with open(file_path, encoding='utf-8') as f:
             content = f.read()
-        
+
         metadata_base = cls.extract_hierarchy(file_path)
         is_script = StoryParser.is_script_format(content)
         scenes = StoryParser.split_into_scenes(content)
-        
+
         nodes = []
         for i, scene_text in enumerate(scenes):
             meta = metadata_base.model_copy(deep=True)
@@ -120,5 +130,5 @@ class StoryProcessor:
                     narrative_beats=beats,
                 )
             )
-            
+
         return nodes

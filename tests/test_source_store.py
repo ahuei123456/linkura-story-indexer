@@ -172,20 +172,18 @@ def _scoped_fixture_store(tmp_path: Path) -> SourceRecordStore:
     fixture_files = [
         (
             "103/第1話『花咲きたい！』/1.md",
-            1,
             "花帆: A\nさやか: a\n---\n梢＆慈: B\n花帆: b\n---\n全員: C\nさやか: c",
         ),
-        ("103/第1話『花咲きたい！』/2.md", 1, "花帆: G\nさやか: g"),
-        ("103/第2話『つづき』/1.md", 2, "花帆: E\nさやか: e"),
-        ("104/第1話『新学期』/1.md", 1, "花帆: F\nさやか: f"),
+        ("103/第1話『花咲きたい！』/2.md", "花帆: G\nさやか: g"),
+        ("103/第2話『つづき』/1.md", "花帆: E\nさやか: e"),
+        ("104/第1話『新学期』/1.md", "花帆: F\nさやか: f"),
     ]
 
     raw_nodes = []
     story_order = 10
-    for relative_path, episode_number, content in fixture_files:
+    for relative_path, content in fixture_files:
         file_path = _write_story_file(story_root, relative_path, content)
         for node in StoryProcessor.process_file(file_path):
-            node.metadata.episode_number = episode_number
             node.metadata.story_order = story_order
             node.metadata.canonical_story_order = story_order
             story_order += 1

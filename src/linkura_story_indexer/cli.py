@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,7 +49,7 @@ from .indexer.manifest import (
     write_manifest,
 )
 from .indexer.parser import PARSER_VERSION
-from .indexer.processor import StoryProcessor
+from .indexer.processor import StoryProcessor, episode_number_from_names
 from .indexer.source_store import SourceRecordStore
 from .indexer.summarizer import SUMMARIZATION_PROMPT_VERSION, HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
@@ -138,14 +137,6 @@ def _assign_canonical_story_order(
     for order, node in enumerate(sorted(nodes, key=order_config.chronological_node_key), start=1):
         node.metadata.canonical_story_order = order
         node.metadata.story_order = order
-
-
-def _episode_number(node: StoryNode) -> int:
-    for value in (node.metadata.episode_name, node.metadata.part_name):
-        match = re.search(r"第(\d+)話", value)
-        if match:
-            return int(match.group(1))
-    return 0
 
 
 def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
@@ -254,7 +245,10 @@ def _metadata_for_node(node: StoryNode) -> dict:
     if not metadata.get("story_order"):
         metadata["story_order"] = metadata.get("canonical_story_order", 0)
     if not metadata.get("episode_number"):
-        metadata["episode_number"] = _episode_number(node)
+        metadata["episode_number"] = episode_number_from_names(
+            node.metadata.episode_name,
+            node.metadata.part_name,
+        )
     metadata["detected_speakers"] = "|".join(node.metadata.detected_speakers)
     metadata["speakers"] = "|".join(node.metadata.speakers)
     metadata["source_scene_ids"] = "|".join(node.metadata.source_scene_ids)
@@ -430,7 +424,7 @@ def extract_state(
     """Extracts source-backed facts from raw scenes to build the State Ledger."""
     initialize_generation_settings()
     console.print(f"Starting state extraction from raw scenes in {source_db}...")
-    
+
     extractor = StateExtractor(source_db_path=source_db)
     extractor.extract_from_sources(output_file=output_file)
 
@@ -624,12 +618,12 @@ def ingest(
 ):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
     initialize_ingest_settings()
-    
+
     story_path = Path(story_dir)
     if not story_path.exists():
         console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
         raise typer.Exit(1)
-        
+
     md_files = sorted(story_path.rglob("*.md"), key=lambda path: str(path))
     source_file_hashes = hash_files(md_files)
     console.print(f"Found {len(md_files)} markdown files. Parsing scenes...")
@@ -652,7 +646,7 @@ def ingest(
         f"Parsed {len(raw_nodes)} raw scenes and built {len(retrieval_chunks)} retrieval chunks. "
         "Starting Hierarchical Summarization..."
     )
-    
+
     glossary = None
     glossary_path = Path("glossary.json")
     glossary_hash = hash_json_file(glossary_path)
@@ -683,10 +677,10 @@ def ingest(
         cache_context=cache_context,
     )
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes, cache_file=cache_file)
-    
+
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     lexical_index = LexicalIndex(get_lexical_db_path())
-    
+
     raw_ids = _upsert_story_nodes(
         retrieval_chunks,
         progress_label="[green]Embedding raw retrieval chunks...",
@@ -726,7 +720,7 @@ def ingest(
         vector_ids=VectorIds(raw=sorted(raw_ids), summaries=sorted(summary_ids)),
     )
     write_manifest(manifest_file, manifest)
-    
+
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
 def main():
