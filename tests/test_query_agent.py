@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic_ai.messages import ModelResponse, ToolCallPart
@@ -10,8 +11,12 @@ from linkura_story_indexer.eval.io import stable_json
 from linkura_story_indexer.query import engine as query_engine
 from linkura_story_indexer.query.agent import (
     AgentAnswer,
+    AgentAnswerDraft,
+    AgentToolCall,
+    EvidenceRegistry,
     FixtureQueryAgent,
     QueryAgent,
+    _agent_tool_payload,
     build_agent_toolset,
 )
 from linkura_story_indexer.query.engine import (
@@ -19,6 +24,7 @@ from linkura_story_indexer.query.engine import (
     RetrievalTraceResult,
     StoryQueryEngine,
 )
+from linkura_story_indexer.query.tools import ToolCandidate, ToolResult
 
 
 def make_engine() -> StoryQueryEngine:
@@ -47,6 +53,254 @@ def raw_node(text: str = "raw evidence", scene_index: int = 0) -> tuple[str, dic
             "chunk_id": f"chunk-103-{scene_index}",
         },
     )
+
+
+def summary_candidate(summary_level: int = 2, part_name: str = "1") -> ToolCandidate:
+    metadata = {
+        "arc_id": "103",
+        "story_type": "Main",
+        "episode_name": "第1話『花咲きたい！』",
+        "episode_number": 1,
+        "part_name": part_name,
+        "summary_level": summary_level,
+    }
+    return ToolCandidate(
+        text="summary evidence",
+        citation_label="103 · Main · Episode 1 · Part ALL_PARTS · summary_level 2",
+        metadata=metadata,
+        rank=1,
+    )
+
+
+def test_evidence_registry_reuses_raw_spans_and_summary_tiers() -> None:
+    engine = make_engine()
+    registry = EvidenceRegistry(engine)
+    raw_metadata = raw_node()[1]
+    chunk_candidate = ToolCandidate(
+        text="chunk evidence",
+        citation_label="raw",
+        metadata=raw_metadata,
+        rank=1,
+    )
+    scene_candidate = ToolCandidate(
+        text="scene evidence",
+        citation_label="raw",
+        metadata={key: value for key, value in raw_metadata.items() if key != "chunk_id"},
+        rank=1,
+    )
+
+    assert registry.register(chunk_candidate) == "e1"
+    assert registry.register(scene_candidate) == "e1"
+    assert registry.register(summary_candidate()) == "e2"
+    assert registry.register(summary_candidate()) == "e2"
+    assert registry.register(summary_candidate(summary_level=3, part_name="1")) == "e3"
+    assert registry.resolve("missing") is None
+
+
+def test_evidence_registry_reuses_summary_search_and_location_results() -> None:
+    engine = make_engine()
+    registry = EvidenceRegistry(engine)
+    vector_candidate = summary_candidate()
+    fetched_candidate = ToolCandidate(
+        text="fetched summary evidence",
+        citation_label="same summary tier",
+        metadata={
+            "arc_id": "103",
+            "story_type": "Main",
+            "summary_level": 2,
+            "episode_number": 1,
+        },
+        rank=1,
+    )
+
+    assert registry.register(vector_candidate) == "e1"
+    assert registry.register(fetched_candidate) == "e1"
+
+
+def test_agent_payload_uses_ids_and_compact_source_blocks() -> None:
+    engine = make_engine()
+    registry = EvidenceRegistry(engine)
+    raw = ToolCandidate(
+        text="raw evidence",
+        citation_label="must not be exposed",
+        metadata=raw_node()[1],
+        rank=1,
+    )
+    summary = summary_candidate()
+
+    payload = _agent_tool_payload(ToolResult(candidates=[raw, summary]), registry)
+
+    assert payload["candidates"] == [
+        {
+            "id": "e1",
+            "text": "raw evidence",
+            "source": {
+                "file_path": "story/103/第1話『花咲きたい！』/1.md",
+                "scene_start": 0,
+                "scene_end": 0,
+                "scene_index": 0,
+            },
+        },
+        {
+            "id": "e2",
+            "text": "summary evidence",
+            "source": {
+                "arc_id": "103",
+                "story_type": "Main",
+                "summary_level": 2,
+                "episode": "1",
+                "part": "ALL_PARTS",
+            },
+        },
+    ]
+    assert all("citation_label" not in candidate for candidate in payload["candidates"])
+
+
+def test_agent_run_resolves_cited_ids_and_drops_unknown_ids(monkeypatch: Any) -> None:
+    engine = make_engine()
+
+    def fake_retrieve(*args: Any, **kwargs: Any) -> RetrievalTraceResult:
+        return RetrievalTraceResult(nodes=[raw_node()], stages={})
+
+    monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve)
+    monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
+    agent = FixtureQueryAgent(
+        calls=[("vector_search_raw", {"query": "question", "top_k": 1})],
+        answer=AgentAnswerDraft(answer="answered", cited_ids=["e1", "e404"]),
+    )
+
+    result = agent.run(engine, "question")
+
+    assert result.answer.cited_labels == ["103 · Episode 1 · Part 1 · Scene 1"]
+    assert result.cited_ids == ["e1"]
+    assert result.unresolved_cited_ids == ["e404"]
+
+
+def test_agent_trace_selects_only_model_cited_candidates(monkeypatch: Any) -> None:
+    engine = make_engine()
+
+    def fake_retrieve(*args: Any, **kwargs: Any) -> RetrievalTraceResult:
+        return RetrievalTraceResult(nodes=[raw_node("first"), raw_node("second", 1)], stages={})
+
+    monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve)
+    monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
+    engine.query_agent = FixtureQueryAgent(
+        calls=[("vector_search_raw", {"query": "question", "top_k": 2})],
+        answer=AgentAnswerDraft(answer="answered", cited_ids=["e2"]),
+    )
+
+    trace = engine.retrieve_with_trace("question", answer_mode=True)
+
+    assert [candidate.text for candidate in trace.stages["final_top_k"].candidates or []] == [
+        "second"
+    ]
+    assert trace.final_citation_labels == ["103 · Episode 1 · Part 1 · Scene 2"]
+    tool_payload = trace.stages["agent"].metadata["tool_calls"][0]
+    assert [candidate["id"] for candidate in tool_payload["candidates"]] == ["e1", "e2"]
+    assert trace.stages["agent"].metadata["model_cited_ids"] == ["e2"]
+
+
+def test_successful_uncited_answer_keeps_final_evidence_empty(monkeypatch: Any) -> None:
+    engine = make_engine()
+
+    def fake_retrieve(*args: Any, **kwargs: Any) -> RetrievalTraceResult:
+        return RetrievalTraceResult(nodes=[raw_node()], stages={})
+
+    monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve)
+    monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
+    engine.query_agent = FixtureQueryAgent(
+        calls=[("vector_search_raw", {"query": "question", "top_k": 1})],
+        answer=AgentAnswerDraft(answer="insufficient context", cited_ids=[]),
+    )
+
+    trace = engine.retrieve_with_trace("question", answer_mode=True)
+
+    assert trace.answer_text == "insufficient context"
+    assert trace.stages["final_top_k"].candidates == []
+    assert trace.final_citation_labels == []
+
+
+def test_function_model_can_follow_raw_payload_into_get_scene_and_cite_id(
+    monkeypatch: Any,
+) -> None:
+    engine = make_engine()
+    node = raw_node("search scene")
+
+    def fake_retrieve(*args: Any, **kwargs: Any) -> RetrievalTraceResult:
+        return RetrievalTraceResult(nodes=[node], stages={})
+
+    class Store:
+        def get_scene(self, file_path: str, scene_index: int) -> dict[str, Any]:
+            assert file_path == node[1]["file_path"]
+            assert scene_index == 0
+            return {
+                "text": "focused scene",
+                "file_path": file_path,
+                "scene_index": scene_index,
+                "metadata": {key: value for key, value in node[1].items() if key != "chunk_id"},
+            }
+
+    monkeypatch.setattr(engine, "retrieve_raw_nodes_with_trace", fake_retrieve)
+    monkeypatch.setattr(engine, "_fetch_raw_text", lambda metadata: "")
+    engine.source_store = Store()
+
+    def tool_return_payload(messages: list[Any]) -> dict[str, Any]:
+        for message in reversed(messages):
+            for part in getattr(message, "parts", []):
+                if getattr(part, "part_kind", None) != "tool-return":
+                    continue
+                content = part.content
+                return json.loads(content) if isinstance(content, str) else content
+        raise AssertionError("expected a tool return")
+
+    def scripted_model(messages: list[Any], info: Any) -> ModelResponse:
+        tool_returns = sum(
+            1
+            for message in messages
+            for part in getattr(message, "parts", [])
+            if getattr(part, "part_kind", None) == "tool-return"
+        )
+        if tool_returns == 0:
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="vector_search_raw", args={"query": "scene"})]
+            )
+        if tool_returns == 1:
+            payload = tool_return_payload(messages)
+            source = payload["candidates"][0]["source"]
+            assert "citation_label" not in payload["candidates"][0]
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="get_scene",
+                        args={
+                            "file_path": source["file_path"],
+                            "scene_index": source["scene_index"],
+                        },
+                    )
+                ]
+            )
+        payload = tool_return_payload(messages)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=info.output_tools[0].name,
+                    args={"answer": "focused answer", "cited_ids": [payload["candidates"][0]["id"]]},
+                )
+            ]
+        )
+
+    engine.query_agent = QueryAgent(
+        model=FunctionModel(scripted_model),
+        model_name="function-agent",
+    )
+
+    trace = engine.retrieve_with_trace("What happened?", answer_mode=True)
+
+    assert trace.answer_text == "focused answer"
+    assert trace.final_citation_labels == ["103 · Episode 1 · Part 1 · Scene 1"]
+    calls = trace.stages["agent"].metadata["tool_calls"]
+    assert calls[0]["candidates"][0]["id"] == "e1"
+    assert calls[1]["candidates"][0]["id"] == "e1"
 
 
 def test_agent_toolset_registers_the_shared_typed_schemas() -> None:
@@ -210,7 +464,8 @@ def test_usage_limit_falls_back_to_one_raw_search(monkeypatch: Any) -> None:
             *,
             engine: Any,
             final_top_k: int,
-            recorder: list[Any],
+            recorder: list[AgentToolCall],
+            registry: EvidenceRegistry,
         ) -> AgentAnswer:
             from pydantic_ai.exceptions import UsageLimitExceeded
 

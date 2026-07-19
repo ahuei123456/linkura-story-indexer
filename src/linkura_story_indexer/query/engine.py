@@ -1946,18 +1946,16 @@ class StoryQueryEngine:
         )
 
     def _agent_dispatch_with_trace(self, question: str) -> RoutedTraceResult:
-        from linkura_story_indexer.query.agent import _agent_tool_payload
-
         run = self._get_query_agent().run(
             self,
             question,
             final_top_k=self._config().final_top_k,
         )
         call_summaries = []
-        candidates = []
-        seen_labels: set[str] = set()
+        candidates_by_id: dict[str, Any] = {}
+        candidate_ids: list[str] = []
         for call in run.tool_calls:
-            payload = _agent_tool_payload(call.result)
+            payload = call.payload
             call_summaries.append(
                 {
                     "step": call.step,
@@ -1966,14 +1964,42 @@ class StoryQueryEngine:
                     **payload,
                 }
             )
-            for candidate in call.result.candidates:
-                if len(candidates) >= self._config().final_top_k:
-                    break
-                if candidate.citation_label in seen_labels:
-                    continue
-                seen_labels.add(candidate.citation_label)
-                candidate.rank = len(candidates) + 1
-                candidates.append(candidate)
+
+            payload_candidates = payload.get("candidates")
+            for index, candidate in enumerate(call.result.candidates):
+                evidence_id: str | None = None
+                if isinstance(payload_candidates, list) and index < len(payload_candidates):
+                    payload_candidate = payload_candidates[index]
+                    if isinstance(payload_candidate, dict):
+                        raw_id = payload_candidate.get("id")
+                        if isinstance(raw_id, str):
+                            evidence_id = raw_id
+                if evidence_id is None:
+                    # This is only a compatibility path for externally constructed old call
+                    # records.  Normal runs always persist IDs in call.payload at dispatch time.
+                    evidence_id = run.registry.register(candidate)
+                registered_candidate = run.registry.resolve(evidence_id) or candidate
+                candidates_by_id.setdefault(evidence_id, registered_candidate)
+                if evidence_id not in candidate_ids:
+                    candidate_ids.append(evidence_id)
+
+        selected_ids = list(run.cited_ids)
+        if (
+            not selected_ids
+            and not run.model_cited_ids
+            and run.stop_reason in {"usage_limit", "model_error"}
+        ):
+            selected_ids = candidate_ids[: self._config().final_top_k]
+
+        candidates = []
+        for evidence_id in selected_ids:
+            candidate = candidates_by_id.get(evidence_id) or run.registry.resolve(evidence_id)
+            if candidate is None:
+                continue
+            if any(existing is candidate for existing in candidates):
+                continue
+            candidate.rank = len(candidates) + 1
+            candidates.append(candidate)
 
         final_candidates = [
             self._trace_candidate_from_tool_candidate(candidate)
@@ -1989,7 +2015,9 @@ class StoryQueryEngine:
                     "stop_reason": run.stop_reason,
                     "fallback_reason": run.fallback_reason,
                     "tool_calls": call_summaries,
+                    "model_cited_ids": list(run.model_cited_ids),
                     "model_cited_labels": list(run.answer.cited_labels),
+                    "unresolved_cited_ids": list(run.unresolved_cited_ids),
                 },
             ),
             "final_top_k": self._trace_stage("final_top_k", final_candidates),
