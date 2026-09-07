@@ -24,15 +24,32 @@ class StoryProcessor:
     """Processes story directories into StoryNodes."""
 
     @staticmethod
-    def extract_hierarchy(file_path: Path) -> StoryMetadata:
+    def extract_hierarchy(
+        file_path: Path,
+        *,
+        story_root: Path | None = None,
+    ) -> StoryMetadata:
         """
         Extracts year, story type, episode, and part info from the directory structure.
+        A configured story_root makes the hierarchy relative to that root.
         Main Story Path: story/103/第1話『...』/1.md
         Side Story Path: story/103/～Shades of Stars～/第1話.md
         """
-        parts = file_path.parts
+        if story_root is None:
+            parts = file_path.parts
+            story_idx = None
+        else:
+            resolved_root = story_root.resolve()
+            resolved_file = file_path.resolve()
+            try:
+                relative_path = resolved_file.relative_to(resolved_root)
+            except ValueError as exc:
+                raise ValueError(f"Story file is outside configured story root: {file_path}") from exc
+            parts = relative_path.parts
+            story_idx = -1
         try:
-            story_idx = parts.index('story')
+            if story_idx is None:
+                story_idx = parts.index('story')
             arc_id = parts[story_idx + 1]
             # Pattern: story/103/FolderName/FileName.md
             folder_name = parts[story_idx + 2]
@@ -92,12 +109,17 @@ class StoryProcessor:
             )
 
     @classmethod
-    def process_file(cls, file_path: Path) -> list[StoryNode]:
+    def process_file(
+        cls,
+        file_path: Path,
+        *,
+        story_root: Path | None = None,
+    ) -> list[StoryNode]:
         """Reads a file, splits it into scenes, and returns StoryNodes."""
+        metadata_base = cls.extract_hierarchy(file_path, story_root=story_root)
         with open(file_path, encoding='utf-8') as f:
             content = f.read()
-        
-        metadata_base = cls.extract_hierarchy(file_path)
+
         is_script = StoryParser.is_script_format(content)
         scenes = StoryParser.split_into_scenes(content)
         

@@ -128,7 +128,7 @@ class StoryOrder:
         known_parts: dict[tuple[str, str, str], set[str]] = defaultdict(set)
 
         for story_file in story_root.rglob("*.md"):
-            metadata = StoryProcessor.extract_hierarchy(story_file)
+            metadata = StoryProcessor.extract_hierarchy(story_file, story_root=story_root)
             pair = (metadata.story_type, metadata.arc_id)
             episode_key = (metadata.arc_id, metadata.story_type, metadata.episode_name)
             known_pairs.add(pair)

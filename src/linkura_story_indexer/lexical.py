@@ -2,7 +2,8 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -158,13 +159,23 @@ class LexicalIndex:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.row_factory = sqlite3.Row
+            with connection:
+                yield connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS corpus_metadata (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lexical_records (
@@ -182,6 +193,20 @@ class LexicalIndex:
                 """
             )
 
+    def set_metadata(self, metadata: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM corpus_metadata")
+            for key, value in metadata.items():
+                connection.execute(
+                    "INSERT INTO corpus_metadata (key, value_json) VALUES (?, ?)",
+                    (key, json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
+                )
+
+    def get_metadata(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT key, value_json FROM corpus_metadata").fetchall()
+        return {str(row["key"]): json.loads(str(row["value_json"])) for row in rows}
+
     def upsert_records(
         self,
         *,
@@ -196,6 +221,7 @@ class LexicalIndex:
             raise ValueError("ids, documents, metadatas, and search_texts must have matching lengths")
 
         with self._connect() as connection:
+            connection.execute("DELETE FROM corpus_metadata")
             for record_id, document, metadata, search_text in zip(
                 ids,
                 documents,
@@ -235,6 +261,7 @@ class LexicalIndex:
             for record_id in sorted_ids:
                 connection.execute("DELETE FROM lexical_records WHERE id = ?", (record_id,))
                 connection.execute("DELETE FROM lexical_records_fts WHERE id = ?", (record_id,))
+            connection.execute("DELETE FROM corpus_metadata")
 
     def search(
         self,

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
 from linkura_story_indexer import cli
 from linkura_story_indexer.query.engine import StreamingQueryResult
@@ -53,7 +55,7 @@ def test_chat_streams_incremental_verbatim_output_and_reuses_router_metadata(
     monkeypatch.setattr(cli, "StoryQueryEngine", lambda **kwargs: engine)
     monkeypatch.setattr(cli.typer, "prompt", _prompt_from(["question", "exit"]))
 
-    cli.chat(routing_mode="llm_router", show_router=True)
+    cli.chat(legacy=True, routing_mode="llm_router", show_router=True)
 
     assert engine.questions == ["question"]
     assert "  chosen_tool: vector_search_raw" in recording_console.text()
@@ -92,7 +94,7 @@ def test_chat_ctrl_c_closes_active_stream_and_continues(monkeypatch: pytest.Monk
     monkeypatch.setattr(cli, "StoryQueryEngine", lambda **kwargs: engine)
     monkeypatch.setattr(cli.typer, "prompt", _prompt_from(["first", "second", "exit"]))
 
-    cli.chat(routing_mode="off", show_router=False)
+    cli.chat(legacy=True, routing_mode="off", show_router=False)
 
     assert closed is True
     assert engine.questions == ["first", "second"]
@@ -122,7 +124,7 @@ def test_chat_prompt_interrupt_or_eof_exits_normally(
     monkeypatch.setattr(cli, "StoryQueryEngine", lambda **kwargs: engine)
     monkeypatch.setattr(cli.typer, "prompt", lambda prompt: (_ for _ in ()).throw(prompt_error()))
 
-    cli.chat(routing_mode="off", show_router=False)
+    cli.chat(legacy=True, routing_mode="off", show_router=False)
 
     assert engine.stream_called is False
     assert "Chat session ended. Goodbye!" in recording_console.text()
@@ -147,7 +149,76 @@ def test_query_command_keeps_non_streaming_engine_path(monkeypatch: pytest.Monke
     monkeypatch.setattr(cli, "initialize_query_settings", lambda: None)
     monkeypatch.setattr(cli, "StoryQueryEngine", lambda **kwargs: engine)
 
-    cli.query("question", routing_mode="off", show_router=False)
+    cli.query("question", legacy=True, routing_mode="off", show_router=False)
 
     assert engine.query_calls == ["question"]
     assert "synchronous answer" in recording_console.text()
+
+
+def test_eval_run_requires_explicit_legacy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    def unexpected_eval(**kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("legacy eval runner must not start without the opt-in")
+
+    monkeypatch.setattr(cli, "run_eval_from_file", unexpected_eval)
+    result = CliRunner().invoke(cli.app, ["eval", "run"])
+
+    assert result.exit_code == 1
+    assert "Legacy eval path is disabled" in result.stdout
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["query", "question"],
+        ["chat"],
+        ["ingest"],
+        ["eval", "run"],
+    ],
+)
+def test_all_legacy_cli_commands_require_opt_in(
+    arguments: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "initialize_query_settings",
+        "initialize_ingest_settings",
+        "StoryQueryEngine",
+        "run_eval_from_file",
+    ):
+        monkeypatch.setattr(
+            cli,
+            name,
+            lambda *args, _name=name, **kwargs: (_ for _ in ()).throw(
+                AssertionError(f"{_name} must not run before legacy opt-in")
+            ),
+        )
+    result = CliRunner().invoke(cli.app, arguments)
+
+    assert result.exit_code != 0
+    assert "Re-run with --legacy." in result.stdout
+
+
+def test_eval_run_allows_explicit_legacy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(aggregate_metrics={}, traces=[])
+
+    monkeypatch.setattr(cli, "run_eval_from_file", fake_run)
+    cli.eval_run_command(
+        golden_set="golden.json",
+        routing_mode="off",
+        output=None,
+        inspect_query_id=None,
+        dump_traces_dir=None,
+        answer_mode=False,
+        audit=False,
+        legacy=True,
+    )
+
+    assert captured["mode"] == "off"

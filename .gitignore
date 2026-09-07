@@ -216,6 +216,8 @@ config.json
 .tmp/
 
 # Story Indexer Artifacts
+/prepared_corpus/
+/prepared_corpus_v2/
 chroma_db/
 Linkura Summaries.zip
 summaries_cache.json
