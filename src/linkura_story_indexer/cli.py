@@ -1,6 +1,8 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import typer
 from rich.console import Console
@@ -35,6 +37,7 @@ from .indexer.chunker import (
     TARGET_CHUNK_CHARS,
     build_retrieval_chunks,
 )
+from .indexer.corpus import assign_canonical_story_order, prepare_corpus
 from .indexer.extractor import StateExtractor
 from .indexer.manifest import (
     RAW_EVIDENCE_SCHEMA_VERSION,
@@ -43,13 +46,16 @@ from .indexer.manifest import (
     IngestionManifest,
     SummaryCacheContext,
     VectorIds,
+    hash_file,
     hash_files,
     hash_json_file,
+    stable_hash,
     utc_timestamp,
     write_manifest,
 )
 from .indexer.parser import PARSER_VERSION
-from .indexer.processor import StoryProcessor, episode_number_from_names
+from .indexer.preparation import prepare_corpus_artifacts
+from .indexer.processor import episode_number_from_names
 from .indexer.source_store import SourceRecordStore
 from .indexer.summarizer import SUMMARIZATION_PROMPT_VERSION, HierarchicalSummarizer
 from .lexical import LexicalIndex, get_lexical_db_path, glossary_alias_groups
@@ -156,14 +162,7 @@ def _story_order_key(node: StoryNode, story_order: StoryOrder | None = None) -> 
     return order_config.chronological_node_key(node)
 
 
-def _assign_canonical_story_order(
-    nodes: list[StoryNode],
-    story_order: StoryOrder | None = None,
-) -> None:
-    order_config = story_order or default_story_order()
-    for order, node in enumerate(sorted(nodes, key=order_config.chronological_node_key), start=1):
-        node.metadata.canonical_story_order = order
-        node.metadata.story_order = order
+_assign_canonical_story_order = assign_canonical_story_order
 
 
 def _translation_aliases(node: StoryNode, glossary: dict | None) -> list[str]:
@@ -363,9 +362,153 @@ def hello():
     """Test command."""
     console.print("Hello!")
 
+
+@app.command("prepare-corpus")
+def prepare_corpus_command(
+    story_dir: str = typer.Option("story", "--story-dir", help="Directory containing story files"),
+    output_dir: str = typer.Option(
+        "prepared_corpus",
+        "--output-dir",
+        help="New directory for local source, catalog, and lexical artifacts",
+    ),
+    story_order_file: str | None = typer.Option(
+        "story_order.yaml", "--story-order", help="Path to story order YAML"
+    ),
+    glossary_file: str | None = typer.Option(
+        "glossary.json", "--glossary", help="Optional curated glossary JSON"
+    ),
+    summary_cache_file: str | None = typer.Option(
+        None, "--summaries", help="Optional existing summaries cache JSON"
+    ),
+    replace: bool = typer.Option(
+        False, "--replace", help="Publish a new immutable revision into an existing prepared directory"
+    ),
+) -> None:
+    """Build local corpus artifacts without generation, embeddings, or Chroma."""
+    try:
+        destination = prepare_corpus_artifacts(
+            story_dir,
+            output_dir,
+            story_order_file=story_order_file,
+            glossary_file=glossary_file,
+            summary_cache_file=summary_cache_file,
+            replace=replace,
+        )
+    except (FileExistsError, FileNotFoundError, NotADirectoryError, RuntimeError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"[bold green]Prepared corpus written to {destination}[/bold green]")
+
+
+@app.command("summarize-corpus")
+def summarize_corpus_command(
+    story_dir: str = typer.Option("story", "--story-dir", help="Directory containing story files"),
+    cache_file: str = typer.Option(
+        "summaries_cache.json", "--cache-file", "--summaries", help="Summary cache to create or update"
+    ),
+    story_order_file: str | None = typer.Option(
+        "story_order.yaml", "--story-order", help="Path to story order YAML"
+    ),
+    glossary_file: str | None = typer.Option(
+        "glossary.json", "--glossary", help="Optional curated glossary JSON"
+    ),
+) -> None:
+    """Generate hierarchical summaries using only the configured generation provider."""
+    initialize_generation_settings()
+    root = Path(story_dir)
+    if not root.is_dir():
+        console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
+        raise typer.Exit(1)
+    glossary_path = Path(glossary_file) if glossary_file else None
+    glossary_hash = hash_json_file(glossary_path) if glossary_path else stable_hash(None)
+    # Snapshot all inputs before parsing or making generation calls.
+    source_hashes = hash_files(list(root.rglob("*.md")))
+    order_hash = hash_file(Path(story_order_file)) if story_order_file and Path(story_order_file).exists() else None
+    story_order = (
+        load_story_order(story_order_file, story_root=root)
+        if story_order_file is not None
+        else default_story_order()
+    )
+    prepared = prepare_corpus(root, story_order=story_order)
+    target = Path(cache_file).resolve()
+    inputs_to_protect = {path.resolve() for path in prepared.files}
+    if story_order_file is not None:
+        inputs_to_protect.add(Path(story_order_file).resolve())
+    if glossary_file is not None:
+        inputs_to_protect.add(Path(glossary_file).resolve())
+    if target in inputs_to_protect:
+        raise typer.BadParameter("--cache-file must not overwrite a corpus input file")
+    if hash_files(sorted(root.rglob("*.md"), key=lambda path: str(path))) != source_hashes:
+        raise RuntimeError("Story sources changed while being parsed")
+    glossary: dict[str, Any] | None = None
+    if glossary_path is not None and glossary_path.exists():
+        with glossary_path.open(encoding="utf-8") as file:
+            value = json.load(file)
+        if not isinstance(value, dict):
+            raise ValueError("Glossary must be a JSON object")
+        glossary = value
+    generation_provider = get_generation_provider_name()
+    generation_model = get_generation_model_name()
+    cache_context = SummaryCacheContext(
+        source_file_hashes=source_hashes,
+        parser_version=PARSER_VERSION,
+        summarization_prompt_version=SUMMARIZATION_PROMPT_VERSION,
+        glossary_hash=glossary_hash,
+        chat_model=generation_model,
+        generation_provider=generation_provider,
+        generation_model=generation_model,
+        embedding_model="not-used",
+        summary_cache_schema_version=SUMMARY_CACHE_SCHEMA_VERSION,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stage = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+    published = False
+    try:
+        if target.exists():
+            shutil.copyfile(target, stage)
+        else:
+            stage.write_text("{}", encoding="utf-8")
+        summarizer = HierarchicalSummarizer(
+            glossary=glossary, story_order=story_order, cache_context=cache_context
+        )
+        summary_nodes = summarizer.summarize_hierarchy(prepared.raw_nodes, cache_file=str(stage))
+        with stage.open(encoding="utf-8") as file:
+            cache = json.load(file)
+        if not isinstance(cache, dict):
+            raise ValueError("Summary cache must be a JSON object")
+        expected: set[str] = set()
+        for node in summary_nodes:
+            meta = node.metadata
+            if node.summary_level == 1:
+                expected.add(f"YEAR|{meta.arc_id}")
+            elif node.summary_level == 2:
+                expected.add(f"EPISODE|{meta.arc_id}|{meta.story_type}|{meta.episode_name}")
+            elif node.summary_level == 3:
+                expected.add(f"{meta.arc_id}|{meta.story_type}|{meta.episode_name}|{meta.part_name}")
+        pruned = {key: value for key, value in cache.items() if key in expected}
+        stage.write_text(json.dumps(pruned, ensure_ascii=False, indent=2), encoding="utf-8")
+        if hash_files(sorted(root.rglob("*.md"), key=lambda path: str(path))) != source_hashes:
+            raise RuntimeError("Story sources changed while summaries were being generated")
+        current_order_hash = (
+            hash_file(Path(story_order_file))
+            if story_order_file and Path(story_order_file).exists()
+            else None
+        )
+        if current_order_hash != order_hash:
+            raise RuntimeError("Story order changed while summaries were being generated")
+        if (hash_json_file(glossary_path) if glossary_path else stable_hash(None)) != glossary_hash:
+            raise RuntimeError("Glossary changed while summaries were being generated")
+        stage.replace(target)
+        published = True
+    finally:
+        if not published:
+            stage.unlink(missing_ok=True)
+    console.print(f"[bold green]Generated {len(summary_nodes)} summaries in {target}[/bold green]")
+
 @app.command()
 def query(
     question: str,
+    legacy: bool = typer.Option(False, "--legacy", help="Use the legacy vector query path."),
     routing_mode: str = typer.Option(
         "off",
         "--routing-mode",
@@ -383,6 +526,9 @@ def query(
     ),
 ):
     """Answers a question based on the RAG index and State Ledger."""
+    if legacy is False:
+        console.print("[yellow]Legacy query path is disabled. Re-run with --legacy.[/yellow]")
+        raise typer.Exit(2)
     mode = _routing_mode(routing_mode)
     initialize_query_settings()
     engine = StoryQueryEngine(
@@ -402,6 +548,7 @@ def query(
 
 @app.command()
 def chat(
+    legacy: bool = typer.Option(False, "--legacy", help="Use the legacy vector chat path."),
     routing_mode: str = typer.Option(
         "off",
         "--routing-mode",
@@ -423,6 +570,9 @@ def chat(
     With --audit, each answer is prepared and emitted as one completed block so the
     secondary audit can run before the response is displayed.
     """
+    if legacy is False:
+        console.print("[yellow]Legacy chat path is disabled. Re-run with --legacy.[/yellow]")
+        raise typer.Exit(2)
     mode = _routing_mode(routing_mode)
     initialize_query_settings()
     engine = StoryQueryEngine(
@@ -475,7 +625,7 @@ def extract_state(
     """Extracts source-backed facts from raw scenes to build the State Ledger."""
     initialize_generation_settings()
     console.print(f"Starting state extraction from raw scenes in {source_db}...")
-    
+
     extractor = StateExtractor(source_db_path=source_db)
     extractor.extract_from_sources(output_file=output_file)
 
@@ -569,8 +719,16 @@ def eval_run_command(
         "--audit/--no-audit",
         help="Run the secondary answer audit pass; requires --answer-mode.",
     ),
+    legacy: bool = typer.Option(
+        False,
+        "--legacy",
+        help="Use the legacy vector retrieval path for this evaluation.",
+    ),
 ):
     """Runs the retrieval evaluation harness."""
+    if legacy is not True:
+        console.print("[yellow]Legacy eval path is disabled. Re-run with --legacy.[/yellow]")
+        raise typer.Exit(1)
     if audit and not answer_mode:
         console.print("[red]Error: --audit requires --answer-mode.[/red]")
         raise typer.Exit(1)
@@ -672,32 +830,29 @@ def export_production_summary_reader_command(
 @app.command()
 def ingest(
     story_dir: str = typer.Option("story", help="Directory containing story files"),
+    legacy: bool = typer.Option(False, "--legacy", help="Use the legacy vector ingestion path."),
     cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),
     manifest_file: str = typer.Option("ingestion_manifest.json", help="Path to the ingestion manifest"),
     prune: bool = typer.Option(True, "--prune/--no-prune", help="Delete indexed records not emitted by this run"),
 ):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
+    if legacy is not True:
+        console.print("[yellow]Legacy ingest path is disabled. Re-run with --legacy.[/yellow]")
+        raise typer.Exit(2)
     initialize_ingest_settings()
-    
+
     story_path = Path(story_dir)
     if not story_path.exists():
         console.print(f"[red]Error: Directory {story_dir} not found.[/red]")
         raise typer.Exit(1)
-        
-    md_files = sorted(story_path.rglob("*.md"), key=lambda path: str(path))
-    source_file_hashes = hash_files(md_files)
-    console.print(f"Found {len(md_files)} markdown files. Parsing scenes...")
+
     story_order = load_story_order(story_root=story_path)
 
-    raw_nodes = []
-    with Progress() as progress:
-        task = progress.add_task("[green]Processing files...", total=len(md_files))
-        for file in md_files:
-            nodes = StoryProcessor.process_file(file)
-            raw_nodes.extend(nodes)
-            progress.update(task, advance=1)
-
-    _assign_canonical_story_order(raw_nodes, story_order=story_order)
+    prepared = prepare_corpus(story_path, story_order=story_order)
+    md_files = prepared.files
+    source_file_hashes = hash_files(list(md_files))
+    raw_nodes = prepared.raw_nodes
+    console.print(f"Prepared {len(md_files)} markdown files and parsed scenes.")
 
     retrieval_chunks = build_retrieval_chunks(raw_nodes)
     SourceRecordStore().replace_all(raw_nodes, retrieval_chunks)
@@ -706,7 +861,7 @@ def ingest(
         f"Parsed {len(raw_nodes)} raw scenes and built {len(retrieval_chunks)} retrieval chunks. "
         "Starting Hierarchical Summarization..."
     )
-    
+
     glossary = None
     glossary_path = Path("glossary.json")
     glossary_hash = hash_json_file(glossary_path)
@@ -737,10 +892,10 @@ def ingest(
         cache_context=cache_context,
     )
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes, cache_file=cache_file)
-    
+
     console.print(f"Generated {len(summary_nodes)} hierarchical summaries. Upserting to Vector DB...")
     lexical_index = LexicalIndex(get_lexical_db_path())
-    
+
     raw_ids = _upsert_story_nodes(
         retrieval_chunks,
         progress_label="[green]Embedding raw retrieval chunks...",
@@ -780,7 +935,7 @@ def ingest(
         vector_ids=VectorIds(raw=sorted(raw_ids), summaries=sorted(summary_ids)),
     )
     write_manifest(manifest_file, manifest)
-    
+
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
 def main():

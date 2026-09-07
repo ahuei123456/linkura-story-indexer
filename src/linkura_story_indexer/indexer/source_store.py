@@ -1,7 +1,8 @@
 import json
 import os
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -60,13 +61,23 @@ class SourceRecordStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.row_factory = sqlite3.Row
+            with connection:
+                yield connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS corpus_metadata (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_scenes (
@@ -146,6 +157,21 @@ class SourceRecordStore:
             )
             self._backfill_turn_speakers(connection)
 
+    def set_metadata(self, metadata: dict[str, Any]) -> None:
+        """Replace the preparation metadata stored alongside source records."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM corpus_metadata")
+            for key, value in metadata.items():
+                connection.execute(
+                    "INSERT INTO corpus_metadata (key, value_json) VALUES (?, ?)",
+                    (key, _stable_json(value)),
+                )
+
+    def get_metadata(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT key, value_json FROM corpus_metadata").fetchall()
+        return {str(row["key"]): json.loads(str(row["value_json"])) for row in rows}
+
     def _backfill_turn_speakers(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
             """
@@ -178,6 +204,7 @@ class SourceRecordStore:
 
     def replace_all(self, raw_nodes: list[StoryNode], retrieval_chunks: list[StoryNode]) -> None:
         with self._connect() as connection:
+            connection.execute("DELETE FROM corpus_metadata")
             connection.execute("DELETE FROM source_scenes")
             connection.execute("DELETE FROM dialogue_turn_speakers")
             connection.execute("DELETE FROM dialogue_turns")
