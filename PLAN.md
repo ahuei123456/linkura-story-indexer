@@ -1,5 +1,11 @@
 # Implementation Plan: Tiered Story RAG
 
+> **Historical design document.** This is the original plan the project was built
+> from; most of it has since been implemented, with Chroma plus a SQLite lexical
+> index as the storage layer. See `README.md` for current behavior and the
+> [agent harness roadmap (#80)](https://github.com/ahuei123456/linkura-story-indexer/issues/80)
+> for planned work.
+
 ## 1. Discussion Summary
 The goal is to implement a **Hierarchical RAG (Retrieval-Augmented Generation)** system for a story repository (mobile game scripts and prose side stories). This system ensures high accuracy, proper sourcing, and plot consistency by navigating through multiple levels of granularity.
 
@@ -27,7 +33,7 @@ The goal is to implement a **Hierarchical RAG (Retrieval-Augmented Generation)**
 ### Phase 2: Bottom-Up Indexing
 1.  **Chapter Summarization:** Use the **Refine** method (Summary + New Chunk) to generate Level 3 summaries for all files.
 2.  **Volume/Arc Synthesis:** Recursively summarize Level 3 -> Level 2 -> Level 1.
-3.  **Vector Upsert:** Store embeddings in a Vector DB (e.g., Pinecone) with hard relational links between tiers.
+3.  **Vector Upsert:** Store embeddings in a Vector DB (Chroma) with hard relational links between tiers.
 
 ### Phase 3: The State Ledger
 1.  **Extraction:** Run a final pass over Arc summaries to generate a `world_state.json`.

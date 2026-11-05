@@ -117,10 +117,10 @@ Raw evidence is embedded as coalesced retrieval chunks over adjacent source
 scenes. The original parsed scene indexes remain in metadata as
 `scene_start`, `scene_end`, and `source_scene_count` for citations.
 
-Changing retrieval chunk thresholds or raw metadata schema requires rebuilding
-the Chroma index, or pruning stale vectors once Task 9 stale-vector pruning
-exists. Otherwise older one-scene records can remain active beside the new
-chunk IDs.
+Changing retrieval chunk thresholds or raw metadata schema changes the emitted
+record IDs. `ingest` prunes Chroma and lexical-index records that the current
+run did not emit (on by default; disable with `--no-prune`), so older one-scene
+records do not remain active beside the new chunk IDs.
 
 Changing the embedding model or embedding input format also requires rebuilding
 the Chroma index. The default `gemini-embedding-2` path uses inline retrieval
@@ -163,3 +163,9 @@ under `web\summary-reader-production`. Export that variant with:
 ```bash
 ./scripts/export-production-summary-reader.sh
 ```
+
+## Roadmap
+
+Planned work is tracked in GitHub issues; start with the
+[agent harness roadmap (#80)](https://github.com/ahuei123456/linkura-story-indexer/issues/80).
+`PLAN.md` is the original design document and is kept for background.
