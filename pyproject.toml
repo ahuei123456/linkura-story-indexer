@@ -5,15 +5,15 @@ description = "Scripts to index the LLLL story"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "chromadb>=1.5.8",
-    "google-genai>=1.73.1",
-    "pydantic>=2.13.3",
-    "pydantic-ai-slim[google,openai]>=1.86.1",
+    "chromadb>=1.5.9",
+    "google-genai>=2.34.0",
+    "pydantic>=2.14.3",
+    "pydantic-ai-slim[google,openai]>=2.66.0",
     "pyyaml>=6.0.3",
-    "python-dotenv>=1.2.2",
-    "typer>=0.24.2",
-    "sudachipy>=0.6.11",
-    "sudachidict-core>=20260428",
+    "python-dotenv>=1.2.4",
+    "typer>=0.27.3",
+    "sudachipy>=0.7.0",
+    "sudachidict-core>=20261015",
 ]
 
 [project.scripts]
@@ -45,8 +45,8 @@ project-includes = [
 
 [dependency-groups]
 dev = [
-    "prek>=0.3.10",
-    "pyrefly>=0.62.0",
-    "pytest>=9.0.3",
-    "ruff>=0.15.11",
+    "prek>=0.5.10",
+    "pyrefly>=1.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]

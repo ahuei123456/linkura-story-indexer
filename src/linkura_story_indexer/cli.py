@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -784,6 +785,8 @@ def ingest(
     console.print("[bold green]Hierarchical Ingestion complete![/bold green]")
 
 def main():
+    # The CLI owns its terminal output; suppress pydantic-ai's first-run Logfire banner.
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
     app()
 
 if __name__ == "__main__":
