@@ -331,6 +331,12 @@ def _agent_instructions(engine: Any | None = None) -> str:
     )
 
 
+def _usage_limit_reason(exc: UsageLimitExceeded) -> str:
+    """Return the limit message without pydantic-ai's appended docs hint."""
+    reason, _, _ = str(exc).partition(" Consider raising the limit")
+    return reason.removesuffix(".") if reason != str(exc) else reason
+
+
 def _configured_request_limit() -> int:
     raw_limit = os.getenv("LINKURA_AGENT_REQUEST_LIMIT")
     if raw_limit is None:
@@ -400,7 +406,7 @@ class QueryAgent:
             usage_limits=UsageLimits(request_limit=_configured_request_limit()),
             toolsets=[build_agent_toolset(engine, recorder, registry)],
         )
-        self._last_request_count = result.usage().requests
+        self._last_request_count = result.usage.requests
         return result.output
 
     def _fallback_dispatch(
@@ -507,7 +513,7 @@ class QueryAgent:
             )
             stop_reason = "final_answer"
         except UsageLimitExceeded as exc:
-            fallback_reason = str(exc)
+            fallback_reason = _usage_limit_reason(exc)
             if not recorder:
                 self._fallback_dispatch(
                     engine,

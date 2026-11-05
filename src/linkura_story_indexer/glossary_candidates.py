@@ -78,7 +78,7 @@ def extract_glossary_candidates(
 
     existing_terms = set() if include_existing else load_glossary_terms(glossary_file)
     accumulators: dict[str, CandidateAccumulator] = {}
-    tokenizer = Dictionary().create()
+    tokenizer = Dictionary().tokenizer()
 
     for path in sorted(story_dir.rglob("*.md"), key=lambda item: str(item)):
         text = path.read_text(encoding="utf-8")
