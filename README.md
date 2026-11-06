@@ -128,6 +128,24 @@ instructions (`title: ... | text: ...` for documents and
 `task: search result | query: ...` for queries), which should not be mixed with
 older vectors created from raw text or from a different embedding model.
 
+## Summary Quality
+
+`ingest` fact-checks each generated Part summary with a second call to the same
+model, which compares the draft against the Japanese source and corrects claims
+the source does not support (merged statements, details filled in from general
+knowledge, misidentified characters). Disable it with `--no-verify-summaries`;
+changing the setting invalidates cached Part summaries. Transient provider
+errors (rate limits, overloads, timeouts) are retried with backoff; exhausted
+credits (HTTP 402) stop the run immediately.
+
+To compare models or prompt changes on a sample of Parts without touching the
+cache, use `scripts/compare_summary_models.py`. It writes a side-by-side report
+to `.tmp/summary-comparison/`:
+
+```powershell
+uv run python scripts/compare_summary_models.py --model google:gemini-3.8-flash --verify --part "104|Main|第8話『Not a marionette』|2" --random 6 --seed 7 --repeat 3
+```
+
 ## Summary Reader
 
 Export the cached Year, Episode, and Part summaries to a static reader:

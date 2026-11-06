@@ -1,7 +1,16 @@
 import json
 import os
+import time
 from collections import defaultdict
 from typing import Any
+
+from pydantic_ai.exceptions import (
+    ModelConnectionError,
+    ModelRateLimitError,
+    ModelRequestTimeout,
+    ModelServerError,
+    ModelUnavailableError,
+)
 
 from ..console import safe_print
 from ..database import create_generation_text_agent
@@ -14,7 +23,36 @@ from .manifest import (
     stable_hash,
 )
 
-SUMMARIZATION_PROMPT_VERSION = "3"
+SUMMARIZATION_PROMPT_VERSION = "4"
+
+# Seconds to wait before each retry of a transient model error (about 8 minutes in total).
+RETRY_DELAYS = (15, 30, 60, 120, 240)
+TRANSIENT_MODEL_ERRORS = (
+    ModelRateLimitError,
+    ModelUnavailableError,
+    ModelServerError,
+    ModelConnectionError,
+    ModelRequestTimeout,
+)
+_sleep = time.sleep
+
+
+def run_with_retries(instructions: str, prompt: str) -> str:
+    """Run one generation call, retrying transient provider errors with backoff."""
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            return create_generation_text_agent(instructions).run_sync(prompt).output.strip()
+        except TRANSIENT_MODEL_ERRORS as exc:
+            # Exhausted credits can arrive as a rate-limit error with HTTP 402; waiting won't help.
+            if getattr(exc, "status_code", None) == 402 or attempt == len(RETRY_DELAYS):
+                raise
+            delay = max(RETRY_DELAYS[attempt], getattr(exc, "retry_after", None) or 0)
+            safe_print(
+                f"Transient model error ({type(exc).__name__}); retrying in {delay:.0f}s "
+                f"(attempt {attempt + 2} of {len(RETRY_DELAYS) + 1})..."
+            )
+            _sleep(delay)
+    raise AssertionError("unreachable")
 
 PART_SUMMARY_SECTIONS = (
     "Overview",
@@ -118,15 +156,55 @@ def _summary_input_instructions(level_name: str) -> str:
 
 
 def _global_summary_format_rules() -> str:
-    return """Global formatting rules:
+    return """Faithfulness rules:
+- State only what the input says. Every claim must be supported by a specific line or exchange in the input.
+- When a speaker mentions two things in sequence (for example, a place and then an event, or one memory and then another), report them as separate facts. Do not connect them by location, time, or cause unless the input explicitly connects them.
+- When characters recall past events, describe each memory as the speaker states it. Do not fill in where, when, or how it happened from general knowledge or from nearby lines.
+- Before writing the final summary, check each Key Event and Continuity Fact against the input. If no line directly states it, rewrite it to match what the input says or remove it.
+
+Global formatting rules:
 - Write all summaries in clear, concise English.
-- Use official glossary translations whenever available.
+- Use official glossary translations whenever available, following the glossary matching rules.
 - Use exactly the required section labels for the tier.
 - Always emit every required section.
 - If a bullet-list section has no applicable entries, write exactly `- None`.
 - Do not use Markdown headings, bold text, numbered lists, tables, or extra sections.
 - Use bullet lists only under list sections.
 - Important Terms should include glossary-mapped terms when relevant, plus salient new entities encountered in the text. It should not dump the full glossary."""
+
+
+def build_verification_prompt(
+    source_text: str,
+    draft_summary: str,
+    glossary: dict | None = None,
+) -> tuple[str, str]:
+    """Build the instructions and prompt for fact-checking a draft Part summary."""
+    system_content = (
+        "You are a meticulous fact-checker for English summaries of a Japanese story. "
+        "You compare a draft summary against its Japanese source text and correct claims "
+        "the source does not support."
+    )
+    characters = (glossary or {}).get("characters") or {}
+    if characters:
+        system_content += (
+            "\n\nOfficial character names (Japanese -> English). The source often uses only a "
+            "given name or surname; the full English name is correct for that character and "
+            "must not be removed:\n"
+            + "".join(f" - {jp} -> {en}\n" for jp, en in characters.items())
+        )
+    prompt = f"""--- SOURCE TEXT (JAPANESE) ---
+{source_text}
+
+--- DRAFT SUMMARY ---
+{draft_summary}
+
+Check every sentence and bullet of the draft against the source text. Look for these problems:
+- Two separate statements merged into one claim, for example linking an event to a place, time, or cause that the source mentions only nearby.
+- Details the source does not state, such as locations, timing, motives, or outcomes filled in from general knowledge.
+- A person identified as someone the source does not name, or a nickname attached to the wrong character. A character's full official name is not an error when the source uses part of it.
+
+Then output the complete corrected summary. Fix or remove only the unsupported claims; keep every supported sentence, all names, the section labels, and the format exactly as they are. Output only the summary, with no notes about the changes."""
+    return system_content, prompt
 
 
 def _summary_format_instructions(level_name: str) -> str:
@@ -277,10 +355,12 @@ class HierarchicalSummarizer:
         glossary: dict | None = None,
         story_order: StoryOrder | None = None,
         cache_context: SummaryCacheContext | None = None,
+        verify_parts: bool = True,
     ):
         self.glossary = glossary
         self.story_order = story_order or default_story_order()
         self.cache_context = cache_context
+        self.verify_parts = verify_parts
 
     def _build_summary_prompt(
         self,
@@ -298,6 +378,17 @@ class HierarchicalSummarizer:
         if self.glossary:
             system_content += "\n\n--- OFFICIAL GLOSSARY (MANDATORY TRANSLATIONS) ---\n"
             system_content += "When translating or referencing names and terms, you MUST use the following English equivalents:\n"
+            system_content += (
+                "Apply an entry only when the input uses that exact term, or an unambiguous "
+                "reading of it, for the same referent. A character's given name or surname on "
+                "its own (as in speaker labels, e.g. the given name of a full-name entry) "
+                "matches that character's entry. Do not map a name to an entry because "
+                "it looks or sounds similar (for example, a nickname or given name that shares "
+                "a kanji or kana with a glossary name). If a name in the input has no matching "
+                "entry, romanize it as written and do not identify it with a glossary character.\n"
+                "Write each matched character's full glossary name at least once in every "
+                "summary (for example, at first mention); shorter forms are fine afterward.\n"
+            )
             for category, terms in self.glossary.items():
                 system_content += f"\n{category.replace('_', ' ').upper()}:\n"
                 for jp, en in terms.items():
@@ -339,8 +430,17 @@ class HierarchicalSummarizer:
         """Calls the LLM to generate a summary using previous context to prevent drift."""
         system_content, prompt = self._build_summary_prompt(current_text, prev_summary, level_name)
 
-        result = create_generation_text_agent(system_content).run_sync(prompt)
-        return result.output.strip()
+        summary = run_with_retries(system_content, prompt)
+        if level_name == "Part" and self.verify_parts:
+            summary = self._verify_part_summary(current_text, summary)
+        return summary
+
+    def _verify_part_summary(self, source_text: str, draft_summary: str) -> str:
+        """Run a fact-check pass that corrects claims the source text does not support."""
+        system_content, prompt = build_verification_prompt(
+            source_text, draft_summary, self.glossary
+        )
+        return run_with_retries(system_content, prompt) or draft_summary
 
     def _base_fingerprint_inputs(self, level: str) -> dict[str, Any]:
         if self.cache_context is None:
@@ -395,6 +495,7 @@ class HierarchicalSummarizer:
     ) -> dict[str, Any]:
         return {
             **self._base_fingerprint_inputs("part"),
+            "part_verification": self.verify_parts,
             "source_file_hashes": self._source_file_hashes_for_nodes(scenes),
             "source_text_hash": hash_text(part_text),
             "previous_summary_hash": hash_text(prev_summary) if prev_summary else "",

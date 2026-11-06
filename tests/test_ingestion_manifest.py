@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic_ai.exceptions import ModelHTTPError, ModelRateLimitError, ModelUnavailableError
 
 from linkura_story_indexer import cli
 from linkura_story_indexer.indexer.chunker import (
@@ -30,6 +31,7 @@ from linkura_story_indexer.indexer.summarizer import (
     SUMMARIZATION_PROMPT_VERSION,
     YEAR_SUMMARY_SECTIONS,
     HierarchicalSummarizer,
+    build_verification_prompt,
     extract_summary_sections,
     trim_previous_summary_context,
 )
@@ -195,7 +197,7 @@ def test_summarizer_uses_configured_generation_agent(monkeypatch: pytest.MonkeyP
         fake_create_generation_text_agent,
     )
 
-    summary = HierarchicalSummarizer()._generate_rolling_summary(
+    summary = HierarchicalSummarizer(verify_parts=False)._generate_rolling_summary(
         "花帆: こんにちは",
         level_name="Part",
     )
@@ -204,6 +206,78 @@ def test_summarizer_uses_configured_generation_agent(monkeypatch: pytest.MonkeyP
     assert len(calls) == 1
     assert "expert archivist" in calls[0]["instructions"]
     assert "花帆: こんにちは" in calls[0]["prompt"]
+
+
+def _fake_agent_factory(calls: list[dict[str, str]], outputs: list[str]) -> Any:
+    class FakeAgent:
+        def __init__(self, instructions: str) -> None:
+            self.instructions = instructions
+
+        def run_sync(self, prompt: str) -> Any:
+            calls.append({"instructions": self.instructions, "prompt": prompt})
+
+            class Result:
+                output = outputs[len(calls) - 1]
+
+            return Result()
+
+    return FakeAgent
+
+
+def test_part_summary_is_fact_checked_against_source(monkeypatch: Any) -> None:
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "linkura_story_indexer.indexer.summarizer.create_generation_text_agent",
+        _fake_agent_factory(calls, ["draft summary", " verified summary "]),
+    )
+    summarizer = HierarchicalSummarizer(glossary={"characters": {"令沢葵": "Aoi Reisawa"}})
+
+    summary = summarizer._generate_rolling_summary("葵: やほー", level_name="Part")
+
+    assert summary == "verified summary"
+    assert len(calls) == 2
+    assert "fact-checker" in calls[1]["instructions"]
+    assert "令沢葵 -> Aoi Reisawa" in calls[1]["instructions"]
+    assert "葵: やほー" in calls[1]["prompt"]
+    assert "draft summary" in calls[1]["prompt"]
+
+
+@pytest.mark.parametrize(
+    ("level_name", "verify_parts"),
+    [("Part", False), ("Episode", True), ("Year", True)],
+)
+def test_fact_check_runs_only_for_enabled_part_summaries(
+    monkeypatch: Any, level_name: str, verify_parts: bool
+) -> None:
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "linkura_story_indexer.indexer.summarizer.create_generation_text_agent",
+        _fake_agent_factory(calls, ["summary"]),
+    )
+
+    HierarchicalSummarizer(verify_parts=verify_parts)._generate_rolling_summary(
+        "input", level_name=level_name
+    )
+
+    assert len(calls) == 1
+
+
+def test_part_fingerprint_changes_with_verification_setting() -> None:
+    def fingerprint(verify_parts: bool) -> str:
+        inputs = HierarchicalSummarizer(verify_parts=verify_parts)._part_cache_inputs(
+            scenes=[], part_text="text", prev_summary=None
+        )
+        return stable_hash(inputs)
+
+    assert fingerprint(True) != fingerprint(False)
+
+
+def test_verification_prompt_without_glossary_omits_character_list() -> None:
+    system, prompt = build_verification_prompt("source", "draft")
+
+    assert "Official character names" not in system
+    assert "--- SOURCE TEXT (JAPANESE) ---\nsource" in prompt
+    assert "--- DRAFT SUMMARY ---\ndraft" in prompt
 
 
 @pytest.mark.parametrize(
@@ -232,7 +306,20 @@ def test_summary_prompt_includes_required_tier_sections(
 
 
 def test_summarization_prompt_version_is_current() -> None:
-    assert SUMMARIZATION_PROMPT_VERSION == "3"
+    assert SUMMARIZATION_PROMPT_VERSION == "4"
+
+
+def test_summary_prompt_restricts_glossary_matching_and_fact_merging() -> None:
+    system, prompt = HierarchicalSummarizer(
+        glossary={"characters": {"令沢葵": "Aoi Reisawa"}}
+    )._build_summary_prompt("source text", level_name="Part")
+
+    assert "Apply an entry only when the input uses that exact term" in system
+    assert "do not identify it with a glossary character" in system
+    assert "Write each matched character's full glossary name at least once" in system
+    assert "Faithfulness rules:" in prompt
+    assert "report them as separate facts" in prompt
+    assert "check each Key Event and Continuity Fact against the input" in prompt
 
 
 def test_episode_prompt_requires_part_index_with_stable_labels() -> None:
@@ -644,3 +731,81 @@ def test_reingest_after_rechunk_prunes_old_chunk_ids(
     assert first_ids != second_ids
     assert set(collection.records) == second_ids
     assert first_ids.isdisjoint(collection.records)
+
+
+def _flaky_agent_factory(failures: list[Exception], calls: list[str]) -> Any:
+    class FlakyAgent:
+        def __init__(self, instructions: str) -> None:
+            self.instructions = instructions
+
+        def run_sync(self, prompt: str) -> Any:
+            calls.append(prompt)
+            if failures:
+                raise failures.pop(0)
+
+            class Result:
+                output = " ok "
+
+            return Result()
+
+    return FlakyAgent
+
+
+def _http_error(
+    category: type[ModelRateLimitError | ModelUnavailableError], status_code: int
+) -> Exception:
+
+    return ModelHTTPError.for_category(category, status_code=status_code, model_name="m")
+
+
+def test_run_with_retries_recovers_from_transient_errors(monkeypatch: Any) -> None:
+    from pydantic_ai.exceptions import ModelOverloadedError, ModelRateLimitError
+
+    from linkura_story_indexer.indexer import summarizer
+
+    calls: list[str] = []
+    sleeps: list[float] = []
+    failures = [_http_error(ModelRateLimitError, 429), _http_error(ModelOverloadedError, 503)]
+    monkeypatch.setattr(summarizer, "create_generation_text_agent", _flaky_agent_factory(failures, calls))
+    monkeypatch.setattr(summarizer, "_sleep", sleeps.append)
+
+    assert summarizer.run_with_retries("instructions", "prompt") == "ok"
+    assert len(calls) == 3
+    assert sleeps == list(summarizer.RETRY_DELAYS[:2])
+
+
+def test_run_with_retries_does_not_retry_exhausted_credits(monkeypatch: Any) -> None:
+    from pydantic_ai.exceptions import ModelRateLimitError
+
+    from linkura_story_indexer.indexer import summarizer
+
+    calls: list[str] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        summarizer,
+        "create_generation_text_agent",
+        _flaky_agent_factory([_http_error(ModelRateLimitError, 402)], calls),
+    )
+    monkeypatch.setattr(summarizer, "_sleep", sleeps.append)
+
+    with pytest.raises(ModelRateLimitError):
+        summarizer.run_with_retries("instructions", "prompt")
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_run_with_retries_gives_up_after_max_attempts(monkeypatch: Any) -> None:
+    from pydantic_ai.exceptions import ModelRateLimitError
+
+    from linkura_story_indexer.indexer import summarizer
+
+    calls: list[str] = []
+    sleeps: list[float] = []
+    failures = [_http_error(ModelRateLimitError, 429) for _ in range(len(summarizer.RETRY_DELAYS) + 1)]
+    monkeypatch.setattr(summarizer, "create_generation_text_agent", _flaky_agent_factory(failures, calls))
+    monkeypatch.setattr(summarizer, "_sleep", sleeps.append)
+
+    with pytest.raises(ModelRateLimitError):
+        summarizer.run_with_retries("instructions", "prompt")
+    assert len(calls) == len(summarizer.RETRY_DELAYS) + 1
+    assert sleeps == list(summarizer.RETRY_DELAYS)
