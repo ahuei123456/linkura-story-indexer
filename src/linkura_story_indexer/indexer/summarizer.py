@@ -88,15 +88,35 @@ KNOWN_SUMMARY_SECTIONS = frozenset(
 )
 
 
+def _section_label(line: str) -> str | None:
+    """Return the section label a line declares, tolerating common formatting slips.
+
+    Models occasionally emit a label without its colon (`Overview`) or wrapped in Markdown
+    (`### Overview:`, `**Overview:**`); treat a line that is otherwise exactly a known label
+    the same as the canonical `Overview:` form.
+    """
+    label = line.strip().lstrip("#").replace("**", "").strip().removesuffix(":").rstrip()
+    return label if label in KNOWN_SUMMARY_SECTIONS else None
+
+
+def normalize_summary_labels(summary: str) -> str:
+    """Rewrite section label lines to the canonical `Label:` form."""
+    lines = []
+    for line in summary.splitlines():
+        label = _section_label(line)
+        lines.append(f"{label}:" if label is not None else line)
+    return "\n".join(lines)
+
+
 def extract_summary_sections(summary: str) -> dict[str, str]:
     """Extract known fixed-label summary sections from generated Markdown."""
     sections: dict[str, list[str]] = {}
     current_label: str | None = None
 
     for line in summary.splitlines():
-        stripped = line.strip()
-        if stripped.endswith(":") and stripped[:-1] in KNOWN_SUMMARY_SECTIONS:
-            current_label = stripped[:-1]
+        label = _section_label(line)
+        if label is not None:
+            current_label = label
             sections.setdefault(current_label, [])
             continue
 
@@ -433,7 +453,7 @@ class HierarchicalSummarizer:
         summary = run_with_retries(system_content, prompt)
         if level_name == "Part" and self.verify_parts:
             summary = self._verify_part_summary(current_text, summary)
-        return summary
+        return normalize_summary_labels(summary)
 
     def _verify_part_summary(self, source_text: str, draft_summary: str) -> str:
         """Run a fact-check pass that corrects claims the source text does not support."""
