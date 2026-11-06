@@ -676,6 +676,11 @@ def ingest(
     cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),
     manifest_file: str = typer.Option("ingestion_manifest.json", help="Path to the ingestion manifest"),
     prune: bool = typer.Option(True, "--prune/--no-prune", help="Delete indexed records not emitted by this run"),
+    verify_summaries: bool = typer.Option(
+        True,
+        "--verify-summaries/--no-verify-summaries",
+        help="Fact-check each Part summary against its source text with a second model call",
+    ),
 ):
     """Walks the story directory, generates hierarchical summaries, and indexes them into ChromaDB."""
     initialize_ingest_settings()
@@ -736,6 +741,7 @@ def ingest(
         glossary=glossary,
         story_order=story_order,
         cache_context=cache_context,
+        verify_parts=verify_summaries,
     )
     summary_nodes = summarizer.summarize_hierarchy(raw_nodes, cache_file=cache_file)
     
