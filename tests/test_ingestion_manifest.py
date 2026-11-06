@@ -33,6 +33,7 @@ from linkura_story_indexer.indexer.summarizer import (
     HierarchicalSummarizer,
     build_verification_prompt,
     extract_summary_sections,
+    normalize_summary_labels,
     trim_previous_summary_context,
 )
 from linkura_story_indexer.lexical import LexicalIndex
@@ -809,3 +810,36 @@ def test_run_with_retries_gives_up_after_max_attempts(monkeypatch: Any) -> None:
         summarizer.run_with_retries("instructions", "prompt")
     assert len(calls) == len(summarizer.RETRY_DELAYS) + 1
     assert sleeps == list(summarizer.RETRY_DELAYS)
+
+
+def test_extract_summary_sections_accepts_label_missing_colon() -> None:
+    summary = "Overview\nKaho arrives.\n\nKey Events:\n- She boards the bus."
+
+    sections = extract_summary_sections(summary)
+
+    assert sections["Overview"] == "Kaho arrives."
+    assert sections["Key Events"] == "- She boards the bus."
+
+
+def test_normalize_summary_labels_restores_colons_only_on_label_lines() -> None:
+    summary = (
+        "Overview\nThe Overview of the day.\n### Key Events :\n- None\n"
+        "**Continuity Facts:**\n- None\n## Overview recap\n- None"
+    )
+
+    assert normalize_summary_labels(summary) == (
+        "Overview:\nThe Overview of the day.\nKey Events:\n- None\n"
+        "Continuity Facts:\n- None\n## Overview recap\n- None"
+    )
+
+
+def test_generated_summary_labels_are_normalized(monkeypatch: Any) -> None:
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "linkura_story_indexer.indexer.summarizer.create_generation_text_agent",
+        _fake_agent_factory(calls, ["Overview:\ndraft", "Overview\nverified"]),
+    )
+
+    summary = HierarchicalSummarizer()._generate_rolling_summary("source", level_name="Part")
+
+    assert summary == "Overview:\nverified"
