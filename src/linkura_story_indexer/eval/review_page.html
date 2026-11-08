@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Answer benchmark review</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1f2328; --muted: #6a6f76; --line: #e2dfd8;
+    --accent: #3b5bdb; --accent-soft: #e7ecff; --ok: #2b8a3e; --ok-soft: #e3f4e6;
+    --warn: #b7791f; --warn-soft: #fdf1dc; --bad: #c92a2a; --bad-soft: #fde5e5;
+    --hl: #fff1a8; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --jp: "Noto Sans JP", "Yu Gothic UI", "Meiryo", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif, var(--jp); color: var(--ink); background: var(--bg); }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  .app { display: grid; grid-template-columns: 300px minmax(460px, 1fr) minmax(380px, 0.9fr); height: 100vh; }
+  .app.dash-mode { grid-template-columns: 300px 1fr; }
+  .app.dash-mode section.inspector { display: none; }
+  .dash td { white-space: nowrap; }
+  aside, main, section.inspector { overflow: auto; min-height: 0; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; overflow-x: hidden; }
+  main { padding: 0 20px 40px; }
+  section.inspector { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; }
+
+  .side-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+  .side-head h1 { font-size: 15px; margin: 0 0 2px; }
+  .progress { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
+  .bar > div { height: 100%; background: var(--ok); }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row > * { min-width: 0; }
+  .grow { flex: 1; }
+  input[type=text], input[type=number], input:not([type]), select, textarea {
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: #fff; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 34px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .case-list { list-style: none; margin: 0; padding: 6px; }
+  .case-list li { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .case-list li:hover { background: var(--bg); }
+  .case-list li.active { background: var(--accent-soft); border-color: #c9d3ff; }
+  .case-id { font: 12px var(--mono); color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+  .case-q { margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .dots { display: inline-flex; gap: 3px; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: inline-block; }
+  .dot.pass { background: var(--ok); } .dot.partial { background: var(--warn); } .dot.fail { background: var(--bad); }
+
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .badge.draft { background: var(--warn-soft); color: var(--warn); }
+  .badge.reviewed { background: var(--ok-soft); color: var(--ok); }
+  .badge.pass { background: var(--ok-soft); color: var(--ok); }
+  .badge.partial { background: var(--warn-soft); color: var(--warn); }
+  .badge.fail { background: var(--bad-soft); color: var(--bad); }
+  .badge.muted { background: var(--bg); color: var(--muted); }
+
+  .toolbar { position: sticky; top: 0; z-index: 3; background: var(--bg); padding: 12px 0 10px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar .title { font: 600 13px var(--mono); margin-right: auto; }
+  .btn { border: 1px solid var(--line); background: #fff; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+  .btn:hover { border-color: #c8c4bb; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.approve { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .btn.danger { color: var(--bad); }
+  .btn.small { padding: 2px 8px; font-size: 12px; }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .dirty-flag { color: var(--warn); font-size: 12px; }
+
+  fieldset { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px 14px; margin: 0 0 14px; }
+  legend { font-weight: 600; padding: 0 6px; }
+  label.f { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 3px; }
+  label.f:first-of-type { margin-top: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; cursor: pointer; user-select: none; font-size: 12px; background: #fff; }
+  .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .claim { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; background: #fcfcfb; }
+  .claim-head { display: grid; grid-template-columns: 140px 1fr auto; gap: 8px; align-items: start; }
+  .ref { display: grid; grid-template-columns: 1fr 58px 58px auto auto; gap: 6px; margin-top: 8px; align-items: center; }
+  .ref textarea { grid-column: 1 / -1; font-family: var(--jp); min-height: 30px; }
+  .ref.active input { border-color: var(--accent); }
+  .refs-label { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .muted { color: var(--muted); }
+  .error-box { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px; white-space: pre-wrap; margin-bottom: 12px; font-size: 13px; }
+  .notice-box { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+  .tabs button { flex: 1; border: 0; background: none; padding: 11px 6px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
+  .tabs button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .pane { padding: 14px; }
+  .src-head { font: 12px var(--mono); color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+  .passage { font-family: var(--jp); white-space: pre-wrap; line-height: 1.7; font-size: 13.5px; }
+  .passage .ln.hl { background: var(--hl); border-radius: 3px; }
+  .passage .scene-sep { display: block; color: var(--muted); font: 11px var(--mono); margin: 10px 0 4px; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+  .run { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .run-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .run-meta { font-size: 12px; color: var(--muted); margin-top: 2px; word-break: break-all; }
+  .answer { font-family: var(--jp); white-space: pre-wrap; background: var(--bg); border-radius: 6px; padding: 8px 10px; margin-top: 8px; max-height: 260px; overflow: auto; font-size: 13px; }
+  table.verdicts { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  table.verdicts td { border-top: 1px solid var(--line); padding: 5px 4px; vertical-align: top; }
+  table.verdicts td:first-child { font-family: var(--mono); white-space: nowrap; }
+  ul.tight { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; }
+  .hit { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .hit .loc { font: 11.5px var(--mono); color: var(--muted); word-break: break-all; }
+  .hit .line { font-family: var(--jp); margin: 2px 0 4px; }
+
+  .dash { padding-top: 14px; }
+  .dash table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font-size: 13px; }
+  .dash th, .dash td { padding: 7px 9px; border-bottom: 1px solid var(--line); text-align: left; }
+  .dash th { background: #faf9f6; font-weight: 600; font-size: 12px; color: var(--muted); }
+  .dash code, .cmd { font: 12.5px var(--mono); }
+  .cmd { display: block; background: #1f2328; color: #f1f3f5; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; margin: 6px 0 14px; }
+  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+  kbd { font: 11px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fff; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="side-head">
+      <div class="row" style="justify-content: space-between">
+        <h1>Answer cases</h1>
+        <button class="btn small" id="dash-btn" title="Benchmark runs overview">Runs</button>
+      </div>
+      <div class="progress" id="progress"></div>
+      <div class="bar"><div id="progress-bar" style="width:0"></div></div>
+      <div class="row" style="margin-bottom:6px">
+        <input id="filter-text" placeholder="Filter cases…" class="grow">
+      </div>
+      <div class="row">
+        <select id="filter-status" class="grow">
+          <option value="all">All statuses</option>
+          <option value="draft">Draft only</option>
+          <option value="reviewed">Reviewed only</option>
+        </select>
+        <button class="btn" id="new-btn">+ New</button>
+      </div>
+    </div>
+    <ul class="case-list" id="case-list"></ul>
+  </aside>
+
+  <main id="main"></main>
+
+  <section class="inspector">
+    <div class="tabs">
+      <button data-tab="source" class="on">Source</button>
+      <button data-tab="runs">Run results</button>
+      <button data-tab="search">Search story</button>
+    </div>
+    <div class="pane" id="pane-source"></div>
+    <div class="pane" id="pane-runs" hidden></div>
+    <div class="pane" id="pane-search" hidden></div>
+  </section>
+</div>
+
+<datalist id="file-list"></datalist>
+
+<script>
+"use strict";
+const S = {
+  suite: null, categories: [], origins: [], files: [], runs: [], casesPath: "", runDirs: [],
+  currentId: null, current: null, originalId: null, dirty: false, view: "case",
+  activeRef: null, tab: "source", message: null, notice: null, search: { q: "", path: "", hits: [] },
+};
+
+// ---------- helpers ----------
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === "class") el.className = value;
+    else if (key.startsWith("on")) el.addEventListener(key.slice(2), value);
+    else if (key === "value") el.value = value;
+    else if (key === "checked") el.checked = value;
+    else el.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return el;
+}
+function fill(el, ...kids) {
+  el.replaceChildren(...kids.flat().filter((kid) => kid !== null && kid !== undefined && kid !== false));
+}
+const clone = (value) => JSON.parse(JSON.stringify(value));
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" }, ...options,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+function markDirty() {
+  if (!S.dirty) { S.dirty = true; renderToolbarState(); }
+}
+function confirmDiscard() {
+  return !S.dirty || confirm("Discard unsaved changes to this case?");
+}
+function caseById(id) { return S.suite.cases.find((c) => c.id === id); }
+function fmtPct(v) { return v === null || v === undefined ? "n/a" : `${Math.round(v * 100)}%`; }
+function fmtDate(iso) { return iso ? iso.replace("T", " ").replace(/\+00:00$/, " UTC") : ""; }
+function normalizeJp(text) { return (text || "").replace(/\s+/g, "").replace(/^[^:：「]{1,16}[:：]/, ""); }
+
+// ---------- run status ----------
+function resultStatus(result) {
+  if (!result) return null;
+  if (result.error) return "fail";
+  const a = result.answer || {};
+  if (a.failure_reason) return "fail";
+  if (!a.judged) return null;
+  if (a.passed) return "pass";
+  if (a.correct === false) return "fail";
+  return "partial";
+}
+function statusLabel(result) {
+  if (!result) return "—";
+  if (result.error) return "ERROR";
+  const a = result.answer || {};
+  if (a.failure_reason) return "NO ANSWER";
+  if (!a.judged) return "unjudged";
+  if (a.passed) return "PASS";
+  if (a.correct === false) return "WRONG";
+  return `partial ${fmtPct(a.completeness)}`;
+}
+function latestByMode(caseId) {
+  const seen = new Map();
+  for (const run of S.runs) {
+    const mode = run.config.mode;
+    if (!seen.has(mode) && run.results[caseId]) seen.set(mode, run.results[caseId]);
+  }
+  return ["off", "heuristic", "llm_router", "agentic"].map((mode) => [mode, seen.get(mode)]);
+}
+
+// ---------- sidebar ----------
+function renderSidebar() {
+  const cases = S.suite.cases;
+  const reviewed = cases.filter((c) => c.review_status === "reviewed").length;
+  document.getElementById("progress").textContent = `${reviewed} of ${cases.length} reviewed · ${S.casesPath}`;
+  document.getElementById("progress-bar").style.width = cases.length ? `${(reviewed / cases.length) * 100}%` : "0";
+  const text = document.getElementById("filter-text").value.toLowerCase();
+  const status = document.getElementById("filter-status").value;
+  const list = document.getElementById("case-list");
+  fill(list);
+  for (const c of cases) {
+    if (status !== "all" && c.review_status !== status) continue;
+    if (text && !`${c.id} ${c.question} ${c.categories.join(" ")}`.toLowerCase().includes(text)) continue;
+    const dots = latestByMode(c.id).map(([mode, result]) =>
+      h("span", { class: `dot ${resultStatus(result) || ""}`, title: `${mode}: ${statusLabel(result)}` }));
+    list.append(h("li", {
+      class: c.id === S.currentId && S.view === "case" ? "active" : "",
+      onclick: () => selectCase(c.id),
+    },
+      h("div", { class: "case-id" }, h("span", {}, c.id), h("span", { class: "dots", title: "Latest run per mode: off, heuristic, llm_router, agentic" }, dots)),
+      h("div", { class: "case-q" }, c.question),
+      h("div", { class: "row", style: "margin-top:4px" },
+        h("span", { class: `badge ${c.review_status}` }, c.review_status),
+        h("span", { class: "muted", style: "font-size:11.5px" }, c.categories.join(", "))),
+    ));
+  }
+  if (!list.children.length) list.append(h("li", { class: "muted" }, "No matching cases."));
+}
+
+// ---------- selection ----------
+function selectCase(id) {
+  if (id !== S.currentId && !confirmDiscard()) return;
+  const c = caseById(id);
+  S.view = "case"; S.currentId = id; S.originalId = id; S.current = clone(c);
+  S.dirty = false; S.message = null; S.notice = null; S.activeRef = null;
+  const firstClaim = S.current.expected_claims.findIndex((claim) => claim.evidence.length);
+  if (firstClaim >= 0) S.activeRef = [firstClaim, 0];
+  renderAll();
+  document.getElementById("main").scrollTop = 0;
+  document.querySelector("section.inspector").scrollTop = 0;
+  location.hash = encodeURIComponent(id);
+}
+function newCase() {
+  if (!confirmDiscard()) return;
+  S.view = "case"; S.currentId = null; S.originalId = null; S.dirty = true; S.activeRef = null;
+  S.message = null; S.notice = null;
+  S.current = {
+    id: "a0XX_new_case", question: "", categories: [], origin: "curated", origin_note: "",
+    review_status: "draft", review_note: "", expected_claims: [
+      { id: "c1", claim: "", evidence: [], verified_by: "" }],
+    forbidden_claims: [], expect_abstention: false, scope: null, rubric: "",
+  };
+  renderAll();
+}
+
+// ---------- editor ----------
+function bindInput(el, getter, setter) {
+  el.value = getter() ?? "";
+  el.addEventListener("input", () => { setter(el.value); markDirty(); });
+  return el;
+}
+function field(label, control) { return [h("label", { class: "f" }, label), control]; }
+
+function renderEditor() {
+  const main = document.getElementById("main");
+  fill(main);
+  if (S.view === "dashboard") { renderDashboard(main); return; }
+  const c = S.current;
+  if (!c) { main.append(h("div", { class: "empty" }, "Select a case on the left, or create a new one.")); return; }
+
+  const toolbar = h("div", { class: "toolbar", id: "toolbar" });
+  main.append(toolbar);
+  if (S.message) main.append(h("div", { class: "error-box" }, S.message));
+  if (S.notice) main.append(h("div", { class: "notice-box" }, S.notice));
+
+  // Question & classification
+  const catChips = h("div", { class: "chips" }, S.categories.map((cat) =>
+    h("span", { class: `chip ${c.categories.includes(cat) ? "on" : ""}`, onclick: (e) => {
+      c.categories = c.categories.includes(cat) ? c.categories.filter((x) => x !== cat) : [...c.categories, cat];
+      e.target.classList.toggle("on"); markDirty();
+    } }, cat)));
+  const originSel = h("select", {}, S.origins.map((o) => h("option", { value: o }, o)));
+  originSel.value = c.origin;
+  originSel.addEventListener("change", () => { c.origin = originSel.value; markDirty(); });
+  const abst = h("select", { title: "How the judge's abstention flag is scored" },
+    h("option", { value: "false" }, "Must answer"),
+    h("option", { value: "true" }, "Must abstain"),
+    h("option", { value: "null" }, "Either (not checked)"));
+  abst.value = String(c.expect_abstention);
+  abst.addEventListener("change", () => { c.expect_abstention = JSON.parse(abst.value); markDirty(); });
+
+  main.append(h("fieldset", {}, h("legend", {}, "Question"),
+    ...field("Case id", bindInput(h("input", { style: "font-family: var(--mono)" }), () => c.id, (v) => { c.id = v.trim(); })),
+    ...field("Question", bindInput(h("textarea", { rows: 2 }), () => c.question, (v) => { c.question = v; })),
+    ...field("Categories", catChips),
+    h("div", { class: "row", style: "margin-top:10px; gap:14px" },
+      h("div", { class: "grow" }, ...field("Origin", originSel)),
+      h("div", { style: "width:210px" }, ...field("Abstention", abst))),
+    ...field("Origin note (where this case came from)", bindInput(h("textarea", { rows: 2 }), () => c.origin_note, (v) => { c.origin_note = v; })),
+  ));
+
+  // Expected claims
+  const claimsBox = h("fieldset", {}, h("legend", {}, `Expected claims (${c.expected_claims.length})`),
+    h("div", { class: "muted", style: "font-size:12px" }, "Each claim needs at least one acceptable source passage (any one counts) or a verified_by query. Scene numbers are zero-based."));
+  c.expected_claims.forEach((claim, ci) => claimsBox.append(renderClaim(claim, ci)));
+  claimsBox.append(h("button", { class: "btn small", style: "margin-top:10px", onclick: () => {
+    c.expected_claims.push({ id: `c${c.expected_claims.length + 1}`, claim: "", evidence: [], verified_by: "" });
+    markDirty(); renderEditor();
+  } }, "+ Claim"));
+  main.append(claimsBox);
+
+  // Forbidden claims
+  const forbBox = h("fieldset", {}, h("legend", {}, `Forbidden claims (${c.forbidden_claims.length})`),
+    h("div", { class: "muted", style: "font-size:12px" }, "Plausible wrong answers. Asserting one fails the case."));
+  c.forbidden_claims.forEach((fc, fi) => {
+    forbBox.append(h("div", { class: "claim" },
+      h("div", { class: "claim-head" },
+        bindInput(h("input", { style: "font-family: var(--mono)", placeholder: "id" }), () => fc.id, (v) => { fc.id = v.trim(); }),
+        bindInput(h("textarea", { rows: 1, placeholder: "Wrong claim" }), () => fc.claim, (v) => { fc.claim = v; }),
+        h("button", { class: "btn small danger", title: "Remove", onclick: () => { c.forbidden_claims.splice(fi, 1); markDirty(); renderEditor(); } }, "✕")),
+      bindInput(h("input", { placeholder: "Note (optional)", style: "margin-top:6px" }), () => fc.note, (v) => { fc.note = v || null; }),
+    ));
+  });
+  forbBox.append(h("button", { class: "btn small", style: "margin-top:10px", onclick: () => {
+    c.forbidden_claims.push({ id: `x${c.forbidden_claims.length + 1}`, claim: "", note: null }); markDirty(); renderEditor();
+  } }, "+ Forbidden claim"));
+  main.append(forbBox);
+
+  // Scope, rubric, review
+  const scope = c.scope || {};
+  main.append(h("fieldset", {}, h("legend", {}, "Grading"),
+    ...field("Rubric (what the judge must insist on, and what is acceptable)", bindInput(h("textarea", { rows: 3 }), () => c.rubric, (v) => { c.rubric = v; })),
+    ...field("Spoiler boundary: last allowed Part file (optional)", bindInput(h("input", { list: "file-list", placeholder: "story/105/…/1.md" }), () => scope.through_file_path, (v) => { setScope("through_file_path", v); })),
+    ...field("Boundary description", bindInput(h("input", {}), () => scope.description, (v) => { setScope("description", v); })),
+    ...field("Review note (your notes; not shown to the judge)", bindInput(h("textarea", { rows: 2 }), () => c.review_note, (v) => { c.review_note = v; })),
+  ));
+  renderToolbarState();
+}
+function setScope(key, value) {
+  const c = S.current;
+  c.scope = { ...(c.scope || {}), [key]: value || null };
+  if (!c.scope.through_file_path && !c.scope.description) c.scope = null;
+}
+
+function renderClaim(claim, ci) {
+  const c = S.current;
+  const box = h("div", { class: "claim" },
+    h("div", { class: "claim-head" },
+      bindInput(h("input", { style: "font-family: var(--mono)", placeholder: "id" }), () => claim.id, (v) => { claim.id = v.trim(); }),
+      bindInput(h("textarea", { rows: 2, placeholder: "Claim a correct answer must make" }), () => claim.claim, (v) => { claim.claim = v; }),
+      h("button", { class: "btn small danger", title: "Remove claim", onclick: () => {
+        if (!confirm(`Remove claim ${claim.id}?`)) return;
+        c.expected_claims.splice(ci, 1); S.activeRef = null; markDirty(); renderEditor(); renderInspector();
+      } }, "✕")),
+    bindInput(h("input", { placeholder: "verified_by: deterministic query (only for claims without passages, e.g. exact counts)", style: "margin-top:6px; font-family: var(--mono); font-size:12px" }),
+      () => claim.verified_by, (v) => { claim.verified_by = v || null; }),
+    h("div", { class: "refs-label" }, `Acceptable sources (${claim.evidence.length})`),
+  );
+  claim.evidence.forEach((ref, ri) => {
+    const active = S.activeRef && S.activeRef[0] === ci && S.activeRef[1] === ri;
+    const num = (key) => {
+      const el = h("input", { type: "number", min: 0, title: key });
+      el.value = ref[key];
+      el.addEventListener("input", () => { ref[key] = parseInt(el.value || "0", 10); markDirty(); });
+      el.addEventListener("change", () => { if (active) renderInspector(); });
+      return el;
+    };
+    box.append(h("div", { class: `ref ${active ? "active" : ""}` },
+      bindInput(h("input", { list: "file-list", placeholder: "story/…/part.md", style: "font-size:12px" }), () => ref.file_path, (v) => { ref.file_path = v.trim(); }),
+      num("scene_start"), num("scene_end"),
+      h("button", { class: "btn small", onclick: () => { S.activeRef = [ci, ri]; showTab("source"); renderEditor(); renderInspector(); } }, "View"),
+      h("button", { class: "btn small danger", title: "Remove source", onclick: () => { claim.evidence.splice(ri, 1); S.activeRef = null; markDirty(); renderEditor(); renderInspector(); } }, "✕"),
+      bindInput(h("textarea", { rows: 1, placeholder: "Quote from the passage (helps reviewers; highlighted in the source view)" }), () => ref.quote, (v) => { ref.quote = v || null; }),
+    ));
+  });
+  box.append(h("button", { class: "btn small", style: "margin-top:8px", onclick: () => {
+    const last = claim.evidence[claim.evidence.length - 1];
+    claim.evidence.push({ file_path: last ? last.file_path : "", scene_start: last ? last.scene_start : 0, scene_end: last ? last.scene_end : 0, quote: null });
+    S.activeRef = [ci, claim.evidence.length - 1]; markDirty(); renderEditor();
+  } }, "+ Source"));
+  return box;
+}
+
+function renderToolbarState() {
+  const bar = document.getElementById("toolbar");
+  if (!bar || !S.current) return;
+  const c = S.current;
+  const stored = S.originalId ? caseById(S.originalId) : null;
+  fill(bar, 
+    h("span", { class: "title" }, S.originalId || "New case"),
+    h("span", { class: `badge ${stored ? stored.review_status : "draft"}` }, stored ? stored.review_status : "unsaved"),
+    S.dirty ? h("span", { class: "dirty-flag" }, "● unsaved") : null,
+    h("button", { class: "btn", disabled: !S.dirty || !stored, title: "Discard edits", onclick: () => { S.dirty = false; selectCase(S.originalId); } }, "Revert"),
+    stored ? h("button", { class: "btn danger", onclick: deleteCase }, "Delete") : null,
+    stored && stored.review_status === "reviewed" && !S.dirty
+      ? h("button", { class: "btn", onclick: () => setStatus("draft") }, "Back to draft") : null,
+    h("button", { class: "btn primary", disabled: !S.dirty, onclick: () => save(false), title: "Ctrl+S" }, "Save"),
+    nextDraftId() ? h("button", { class: "btn", title: "Next case still in draft", onclick: () => selectCase(nextDraftId()) }, "Next draft →") : null,
+    h("button", { class: "btn approve", onclick: () => save(true), title: "Ctrl+Enter" },
+      S.dirty ? "Save & approve" : (stored && stored.review_status === "reviewed" ? "Approved ✓" : "Approve")),
+  );
+}
+
+function nextDraftId() {
+  const cases = S.suite.cases;
+  const start = Math.max(0, cases.findIndex((x) => x.id === S.originalId));
+  for (let step = 1; step <= cases.length; step += 1) {
+    const candidate = cases[(start + step) % cases.length];
+    if (candidate.review_status === "draft" && candidate.id !== S.originalId) return candidate.id;
+  }
+  return null;
+}
+
+function cleanCase(c) {
+  const out = clone(c);
+  out.review_note = out.review_note || null;
+  for (const claim of out.expected_claims) {
+    claim.verified_by = claim.verified_by || null;
+    for (const ref of claim.evidence) ref.quote = ref.quote || null;
+  }
+  for (const fc of out.forbidden_claims) fc.note = fc.note || null;
+  return out;
+}
+
+async function save(approve) {
+  try {
+    const data = await api("/api/case", { method: "PUT", body: { case: cleanCase(S.current), original_id: S.originalId, approve } });
+    const saved = data.case;
+    const index = S.suite.cases.findIndex((x) => x.id === S.originalId);
+    if (index >= 0) S.suite.cases[index] = saved; else S.suite.cases.push(saved);
+    S.currentId = saved.id; S.originalId = saved.id; S.current = clone(saved);
+    S.dirty = false; S.message = null; S.notice = data.notice;
+    location.hash = encodeURIComponent(saved.id);
+    renderAll();
+  } catch (error) {
+    S.message = error.message; renderEditor();
+  }
+}
+async function setStatus(status) {
+  try {
+    const data = await api(`/api/case/${encodeURIComponent(S.originalId)}/status`, { method: "PUT", body: { status } });
+    const index = S.suite.cases.findIndex((x) => x.id === S.originalId);
+    S.suite.cases[index] = data.case; S.current = clone(data.case); renderAll();
+  } catch (error) { S.message = error.message; renderEditor(); }
+}
+async function deleteCase() {
+  if (!confirm(`Delete case ${S.originalId}? This removes it from the suite file.`)) return;
+  try {
+    await api(`/api/case/${encodeURIComponent(S.originalId)}`, { method: "DELETE" });
+    S.suite.cases = S.suite.cases.filter((x) => x.id !== S.originalId);
+    S.current = null; S.currentId = null; S.originalId = null; S.dirty = false;
+    renderAll();
+  } catch (error) { S.message = error.message; renderEditor(); }
+}
+
+// ---------- inspector ----------
+function showTab(tab) {
+  S.tab = tab;
+  for (const button of document.querySelectorAll(".tabs button")) button.classList.toggle("on", button.dataset.tab === tab);
+  for (const name of ["source", "runs", "search"]) document.getElementById(`pane-${name}`).hidden = name !== tab;
+  renderInspector();
+}
+function renderInspector() {
+  if (S.tab === "source") renderSource();
+  else if (S.tab === "runs") renderRuns();
+  else renderSearch();
+}
+
+async function renderSource() {
+  const pane = document.getElementById("pane-source");
+  const c = S.current;
+  if (!c || !S.activeRef) {
+    fill(pane, h("div", { class: "empty" }, "Click View next to a source to read the passage here."));
+    return;
+  }
+  const [ci, ri] = S.activeRef;
+  const ref = c.expected_claims[ci] && c.expected_claims[ci].evidence[ri];
+  if (!ref) { fill(pane); return; }
+  fill(pane, h("div", { class: "muted" }, "Loading…"));
+  const start = ref.scene_start, end = ref.scene_end;
+  const ctx = S.context || { before: 0, after: 0 };
+  const from = Math.max(0, start - ctx.before), to = end + ctx.after;
+  const indexes = [];
+  for (let index = from; index <= to; index += 1) indexes.push(index);
+  let rawScenes;
+  try {
+    rawScenes = await Promise.all(indexes.map((index) =>
+      api(`/api/passage?file_path=${encodeURIComponent(ref.file_path)}&start=${index}&end=${index}`).then((d) => [index, d.text])));
+  } catch (error) { fill(pane, h("div", { class: "error-box" }, error.message)); return; }
+  const missing = rawScenes.filter(([, text]) => text === null).map(([index]) => index);
+  const quote = normalizeJp(ref.quote);
+  const body = h("div", { class: "passage" });
+  for (const [index, text] of rawScenes) {
+    if (text === null) continue;
+    const inRange = index >= start && index <= end;
+    body.append(h("span", { class: "scene-sep" }, `scene ${index}${inRange ? "  ◀ cited" : "  (context)"}`));
+    for (const line of (text || "").split("\n")) {
+      const norm = normalizeJp(line);
+      const hit = quote && norm.length >= 3 && (quote.includes(norm) || norm.includes(quote));
+      body.append(h("span", { class: `ln ${hit ? "hl" : ""}`, style: inRange ? "" : "opacity:.6" }, line), "\n");
+    }
+  }
+  if (missing.length === rawScenes.length) body.append(h("div", { class: "error-box" }, "No scenes found for this reference."));
+  fill(pane, 
+    h("div", { class: "src-head" }, `${ref.file_path} · scenes ${start}–${end}  (claim ${c.expected_claims[ci].id})`),
+    h("div", { class: "row", style: "margin-bottom:8px" },
+      h("button", { class: "btn small", onclick: () => { S.context = { ...ctx, before: ctx.before + 1 }; renderSource(); } }, "+ scene before"),
+      h("button", { class: "btn small", onclick: () => { S.context = { ...ctx, after: ctx.after + 1 }; renderSource(); } }, "+ scene after"),
+      (ctx.before || ctx.after) ? h("button", { class: "btn small", onclick: () => { S.context = null; renderSource(); } }, "Reset") : null,
+      missing.filter((i) => i >= start && i <= end).length
+        ? h("span", { class: "badge fail" }, `missing scenes: ${missing.filter((i) => i >= start && i <= end).join(", ")}`) : null),
+    body,
+  );
+}
+
+function renderRuns() {
+  const pane = document.getElementById("pane-runs");
+  const c = S.current;
+  if (!c || !S.originalId) { fill(pane, h("div", { class: "empty" }, "Select a saved case to see its run results.")); return; }
+  const runs = S.runs.filter((run) => run.results[S.originalId]);
+  if (!runs.length) {
+    fill(pane, h("div", { class: "empty" }, "No benchmark runs include this case yet."), runCommandHint());
+    return;
+  }
+  fill(pane, ...runs.map((run) => renderRunResult(run, run.results[S.originalId])));
+}
+function renderRunResult(run, result) {
+  const status = resultStatus(result);
+  const a = result.answer || {};
+  const v = a.verdict;
+  const ev = result.evidence || {};
+  const evidenceBadge = ev.all_required_in_context === null || ev.all_required_in_context === undefined ? null
+    : h("span", { class: `badge ${ev.all_required_in_context ? "pass" : "fail"}`, title: "Every required passage reached the answer step" }, ev.all_required_in_context ? "evidence ✓" : "evidence ✗");
+  const claimText = Object.fromEntries((S.current.expected_claims || []).map((cl) => [cl.id, cl.claim]));
+  return h("div", { class: "run" },
+    h("div", { class: "run-head" },
+      h("strong", {}, run.config.mode),
+      h("span", { class: `badge ${status || "muted"}` }, statusLabel(result)),
+      evidenceBadge,
+      result.latency_seconds ? h("span", { class: "muted", style: "font-size:12px" }, `${result.latency_seconds.toFixed(1)}s`) : null),
+    h("div", { class: "run-meta" }, `${fmtDate(run.config.started_at)} · ${run.config.generation_model} · judge ${run.config.judge_model || "off"} · ${run.path}`),
+    result.error ? h("div", { class: "error-box", style: "margin-top:8px" }, result.error) : null,
+    a.unavailable_reason ? h("div", { class: "muted", style: "margin-top:6px" }, `Not judged: ${a.unavailable_reason}`) : null,
+    a.failure_reason ? h("div", { class: "error-box", style: "margin-top:8px" }, a.failure_reason) : null,
+    result.answer_text ? h("details", { open: status !== "pass" },
+      h("summary", { class: "muted", style: "cursor:pointer; margin-top:6px" }, "Answer"),
+      h("div", { class: "answer" }, result.answer_text)) : null,
+    v ? h("table", { class: "verdicts" },
+      v.claims.map((j) => h("tr", {},
+        h("td", { title: claimText[j.claim_id] || "" }, j.claim_id),
+        h("td", {}, h("span", { class: `badge ${j.verdict === "present" ? "pass" : j.verdict === "partial" ? "partial" : "fail"}` }, j.verdict)),
+        h("td", {}, j.rationale))),
+      v.forbidden.filter((f) => f.asserted).map((f) => h("tr", {},
+        h("td", {}, f.claim_id), h("td", {}, h("span", { class: "badge fail" }, "asserted")), h("td", {}, f.rationale))),
+    ) : null,
+    v && v.unsupported_statements.length ? h("div", { style: "margin-top:6px; font-size:12.5px" },
+      h("span", { class: "muted" }, "Unsupported statements:"),
+      h("ul", { class: "tight" }, v.unsupported_statements.map((s) => h("li", {}, s)))) : null,
+    v && v.abstained ? h("div", { class: "muted", style: "font-size:12.5px; margin-top:4px" }, "The answer abstained.") : null,
+    v && v.notes ? h("div", { class: "muted", style: "font-size:12.5px; margin-top:4px" }, `Judge notes: ${v.notes}`) : null,
+  );
+}
+
+function renderSearch() {
+  const pane = document.getElementById("pane-search");
+  const q = h("input", { placeholder: "Regex, e.g. れいかさん|鼓門", value: S.search.q });
+  const path = h("input", { placeholder: "Path contains (optional), e.g. 104/第8話", value: S.search.path, list: "file-list" });
+  const run = async () => {
+    S.search.q = q.value; S.search.path = path.value;
+    try { S.search.hits = await api(`/api/search?q=${encodeURIComponent(q.value)}&path=${encodeURIComponent(path.value)}`); S.search.error = null; }
+    catch (error) { S.search.error = error.message; S.search.hits = []; }
+    renderSearch();
+  };
+  for (const el of [q, path]) el.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+  const claims = S.current ? S.current.expected_claims : [];
+  fill(pane, 
+    h("div", { class: "row", style: "margin-bottom:6px" }, q),
+    h("div", { class: "row", style: "margin-bottom:8px" }, path, h("button", { class: "btn primary", onclick: run }, "Search")),
+    S.search.error ? h("div", { class: "error-box" }, S.search.error) : null,
+    S.search.hits.length ? h("div", { class: "muted", style: "font-size:12px" }, `${S.search.hits.length} hits${S.search.hits.length >= 200 ? " (first 200)" : ""}`) : null,
+    ...S.search.hits.map((hit) => {
+      const target = h("select", { style: "width:auto; padding:2px 6px; font-size:12px" },
+        h("option", { value: "" }, "Add to claim…"),
+        claims.map((cl, ci) => h("option", { value: ci }, cl.id)));
+      target.addEventListener("change", () => {
+        if (target.value === "") return;
+        const ci = Number(target.value);
+        claims[ci].evidence.push({ file_path: hit.file_path, scene_start: hit.scene_index, scene_end: hit.scene_index, quote: hit.line });
+        S.activeRef = [ci, claims[ci].evidence.length - 1];
+        markDirty(); renderEditor(); target.value = "";
+      });
+      return h("div", { class: "hit" },
+        h("div", { class: "loc" }, `${hit.file_path} · scene ${hit.scene_index}`),
+        h("div", { class: "line" }, hit.line),
+        h("div", { class: "row" },
+          h("button", { class: "btn small", onclick: () => previewHit(hit) }, "Read scene"),
+          S.current ? target : null));
+    }),
+  );
+}
+async function previewHit(hit) {
+  const pane = document.getElementById("pane-search");
+  const data = await api(`/api/passage?file_path=${encodeURIComponent(hit.file_path)}&start=${hit.scene_index}&end=${hit.scene_index}`);
+  const body = h("div", { class: "passage" });
+  const norm = normalizeJp(hit.line);
+  for (const line of (data.text || "").split("\n")) {
+    body.append(h("span", { class: `ln ${normalizeJp(line) === norm ? "hl" : ""}` }, line), "\n");
+  }
+  fill(pane, 
+    h("button", { class: "btn small", onclick: renderSearch, style: "margin-bottom:8px" }, "← Back to results"),
+    h("div", { class: "src-head" }, `${hit.file_path} · scene ${hit.scene_index}`), body);
+}
+
+// ---------- dashboard ----------
+function runCommandHint() {
+  return h("div", {},
+    h("div", { class: "muted", style: "margin-top:10px" }, "Run the benchmark (results appear here after reloading runs):"),
+    h("code", { class: "cmd" }, `uv run indexer eval answers run --mode all --output-dir ${S.runDirs[0] || "runs/answers"}/<run-name>\nuv run indexer eval answers run --mode agentic --reviewed-only --output-dir ${S.runDirs[0] || "runs/answers"}/<run-name>`));
+}
+function renderDashboard(main) {
+  const groups = new Map();
+  for (const run of S.runs) {
+    const dir = run.path.split("/").slice(0, -1).join("/");
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir).push(run);
+  }
+  const cost = (u) => u.estimated_cost_usd !== null && u.estimated_cost_usd !== undefined ? `$${u.estimated_cost_usd.toFixed(2)}` : (u.requests ? "unavailable" : "n/a");
+  main.append(h("div", { class: "dash" },
+    h("div", { class: "row", style: "justify-content:space-between; margin-bottom:10px" },
+      h("h2", { style: "margin:0; font-size:17px" }, "Benchmark runs"),
+      h("button", { class: "btn", onclick: reloadRuns }, "Reload runs")),
+    h("div", { class: "muted", style: "font-size:12.5px; margin-bottom:8px" }, `Scanning ${S.runDirs.join(", ") || "(no run directories)"} for answer run JSON files.`),
+    runCommandHint(),
+    groups.size ? null : h("div", { class: "empty" }, "No runs found yet."),
+    ...[...groups.entries()].map(([dir, runs]) => h("div", { style: "margin-bottom:18px" },
+      h("div", { style: "font: 600 12.5px var(--mono); margin: 6px 0" }, dir),
+      h("table", {},
+        h("tr", {}, ["Mode", "Started", "Model", "Cases", "Pass", "Complete", "Evidence in ctx", "Unsupported-free", "Citations", "System cost", "Judge cost"].map((x) => h("th", {}, x))),
+        runs.map((run) => {
+          const a = run.aggregate;
+          return h("tr", {},
+            h("td", {}, h("strong", {}, run.config.mode), run.config.reviewed_only ? h("span", { class: "badge reviewed", style: "margin-left:6px" }, "reviewed only") : null),
+            h("td", {}, fmtDate(run.config.started_at).replace(/:\d\d UTC$/, " UTC")),
+            h("td", {}, run.config.generation_model),
+            h("td", {}, `${a.case_count} (${a.judged_count} judged)`),
+            h("td", {}, fmtPct(a.pass_rate)), h("td", {}, fmtPct(a.mean_completeness)),
+            h("td", {}, fmtPct(a.evidence_in_context_rate)), h("td", {}, fmtPct(a.supported_rate)),
+            h("td", {}, fmtPct(a.citation_valid_rate)), h("td", {}, cost(a.usage)), h("td", {}, cost(a.judge_usage)));
+        })))),
+  ));
+}
+async function reloadRuns() { S.runs = await api("/api/runs"); renderAll(); }
+
+// ---------- boot ----------
+function renderAll() {
+  document.querySelector(".app").classList.toggle("dash-mode", S.view === "dashboard");
+  renderSidebar(); renderEditor(); renderInspector();
+}
+async function boot() {
+  const state = await api("/api/state");
+  Object.assign(S, { suite: state.suite, categories: state.categories, origins: state.origins, files: state.files, casesPath: state.cases_path, runDirs: state.run_dirs });
+  fill(document.getElementById("file-list"), ...S.files.map((f) => h("option", { value: f.file_path }, `${f.scene_count} scenes`)));
+  S.runs = await api("/api/runs");
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  if (fromHash && caseById(fromHash)) selectCase(fromHash);
+  else if (S.suite.cases.length) selectCase((S.suite.cases.find((c) => c.review_status === "draft") || S.suite.cases[0]).id);
+  else renderAll();
+}
+document.getElementById("filter-text").addEventListener("input", renderSidebar);
+document.getElementById("filter-status").addEventListener("change", renderSidebar);
+document.getElementById("new-btn").addEventListener("click", newCase);
+document.getElementById("dash-btn").addEventListener("click", () => {
+  if (!confirmDiscard()) return;
+  S.dirty = false; S.view = "dashboard"; S.current = null; S.currentId = null; S.originalId = null; renderAll();
+});
+for (const button of document.querySelectorAll(".tabs button")) button.addEventListener("click", () => showTab(button.dataset.tab));
+document.addEventListener("keydown", (e) => {
+  if (!S.current || S.view !== "case") return;
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (S.dirty) save(false); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); save(true); }
+});
+window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+boot().catch((error) => { fill(document.getElementById("main"), h("div", { class: "error-box", style: "margin-top:20px" }, `Failed to load: ${error.message}`)); });
+</script>
+</body>
+</html>

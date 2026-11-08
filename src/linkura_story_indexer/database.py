@@ -11,6 +11,8 @@ from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
+from linkura_story_indexer.eval.usage import maybe_record_usage
+
 load_dotenv()
 
 DEFAULT_CHAT_MODEL = "gemini-3-flash-preview"
@@ -128,6 +130,10 @@ def create_generation_text_agent(instructions: str) -> Agent[None, str]:
 
 
 def create_generation_model(model_name: str | None = None) -> Any:
+    return maybe_record_usage(_create_generation_model(model_name))
+
+
+def _create_generation_model(model_name: str | None = None) -> Any:
     provider = get_generation_provider_name()
     model_name = model_name or get_generation_model_name()
     if provider == "google":
@@ -147,6 +153,10 @@ def create_agentic_generation_model(model_name: str | None = None) -> Any:
     agentic path uses the Responses API. Set LINKURA_OPENAI_API=chat to force
     Chat Completions (for OPENAI_BASE_URL proxies without a Responses endpoint).
     """
+    return maybe_record_usage(_create_agentic_generation_model(model_name))
+
+
+def _create_agentic_generation_model(model_name: str | None = None) -> Any:
     provider = get_generation_provider_name()
     model_name = model_name or get_generation_model_name()
     if provider == "google":

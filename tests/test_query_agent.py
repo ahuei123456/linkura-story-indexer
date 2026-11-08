@@ -496,3 +496,122 @@ def test_fixture_agent_traces_are_stable_across_runs(monkeypatch: Any) -> None:
     second = engine.retrieve_with_trace("question", query_id="q", answer_mode=True)
 
     assert stable_json(first) == stable_json(second)
+
+
+class CappedAgent(QueryAgent):
+    """Records scripted tool results, then hits the request cap like a real run."""
+
+    def __init__(self, results: list[tuple[str, ToolResult]], requests: int = 8) -> None:
+        super().__init__(model_name="capped")
+        self.results = results
+        self.requests = requests
+
+    def _run_model(
+        self,
+        question: str,
+        *,
+        engine: Any,
+        final_top_k: int,
+        recorder: list[AgentToolCall],
+        registry: EvidenceRegistry,
+    ) -> AgentAnswer:
+        from pydantic_ai.exceptions import UsageLimitExceeded
+        from pydantic_ai.usage import RunUsage
+
+        self._run_usage = RunUsage(requests=self.requests)
+        for tool_name, result in self.results:
+            recorder.append(
+                AgentToolCall(
+                    step=len(recorder) + 1,
+                    tool_name=tool_name,
+                    args={},
+                    result=result,
+                    payload=_agent_tool_payload(result, registry),
+                )
+            )
+        raise UsageLimitExceeded("The next request would exceed the request_limit of 8")
+
+
+def raw_candidate(scene_index: int) -> ToolCandidate:
+    text, metadata = raw_node(f"scene {scene_index} text", scene_index)
+    return ToolCandidate(
+        text=text, citation_label=f"103 · Episode 1 · Part 1 · Scene {scene_index + 1}", metadata=metadata, rank=1
+    )
+
+
+def test_capped_agent_answers_from_gathered_evidence(monkeypatch: Any) -> None:
+    engine = make_engine()
+    engine.query_agent = CappedAgent(
+        [
+            ("vector_search_raw", ToolResult(candidates=[raw_candidate(0), raw_candidate(1)])),
+            ("get_summaries", ToolResult(candidates=[summary_candidate()])),
+            ("get_scene", ToolResult(candidates=[raw_candidate(3)])),
+        ]
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_answer(question: str, nodes: list[Any], analysis: Any = None) -> str:
+        seen["texts"] = [text for text, _ in nodes]
+        return "synthesized answer"
+
+    monkeypatch.setattr(engine, "_answer_from_raw_evidence", fake_answer)
+
+    trace = engine.retrieve_with_trace("What happened?", answer_mode=True)
+
+    assert trace.answer_text == "synthesized answer"
+    # Deliberately opened scenes come first, then search hits, then summaries.
+    assert seen["texts"] == ["scene 3 text", "scene 0 text", "scene 1 text", "summary evidence"]
+    agent = trace.stages["agent"].metadata
+    assert agent["stop_reason"] == "usage_limit"
+    assert agent["answer_source"] == "evidence_synthesis"
+    assert agent["request_count"] == 8
+    assert trace.final_citation_labels[0] == "103 · Episode 1 · Part 1 · Scene 4"
+
+
+def test_capped_agent_prepared_query_synthesizes(monkeypatch: Any) -> None:
+    engine = make_engine()
+    engine.query_agent = CappedAgent([("get_scene", ToolResult(candidates=[raw_candidate(2)]))])
+    monkeypatch.setattr(engine, "_raw_answer_prompts", lambda question, nodes, analysis: ("system", "user"))
+
+    prepared = engine._prepare_query("What happened?")
+
+    assert prepared.immediate_answer is None
+    assert (prepared.system_prompt, prepared.user_prompt) == ("system", "user")
+    assert prepared.router_metadata is not None
+    assert prepared.router_metadata["answer_source"] == "evidence_synthesis"
+
+
+def test_capped_agent_without_evidence_keeps_tool_answer() -> None:
+    engine = make_engine()
+    engine.query_agent = CappedAgent(
+        [("count_dialogue", ToolResult(metadata={"direct_answer": "花帆 has 24 dialogue turns."}))]
+    )
+
+    trace = engine.retrieve_with_trace("How many turns?", answer_mode=True)
+
+    assert trace.answer_text == "花帆 has 24 dialogue turns."
+    assert trace.stages["agent"].metadata["answer_source"] == "tool_fallback"
+
+
+def test_final_agent_answer_is_marked_as_agent() -> None:
+    engine = make_engine()
+    engine.query_agent = FixtureQueryAgent(calls=[], answer="direct")
+
+    trace = engine.retrieve_with_trace("question", answer_mode=True)
+
+    assert trace.answer_text == "direct"
+    assert trace.stages["agent"].metadata["answer_source"] == "agent"
+
+
+def test_request_count_is_reported_when_the_cap_is_hit(monkeypatch: Any) -> None:
+    monkeypatch.setenv("LINKURA_AGENT_REQUEST_LIMIT", "3")
+    engine = make_engine()
+
+    def always_lookup(messages: Any, info: Any) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart(tool_name="lookup_glossary", args={"term": "花帆"})])
+
+    agent = QueryAgent(model=FunctionModel(always_lookup), model_name="looping")
+    result = agent.run(engine, "question")
+
+    assert result.stop_reason == "usage_limit"
+    assert result.request_count == 3
