@@ -124,6 +124,18 @@ class RetrievalTraceResult:
     stages: dict[StageName, StageTrace]
 
 
+# Fallback evidence order when the agent stops early: scenes it deliberately opened first,
+# then raw search hits, then everything else (summaries), each in the order encountered.
+_FALLBACK_TOOL_PRIORITY = {"get_scene": 0, "vector_search_raw": 1}
+
+
+def _rank_fallback_evidence(candidate_ids: list[str], tool_by_id: dict[str, str]) -> list[str]:
+    return sorted(
+        candidate_ids,
+        key=lambda evidence_id: _FALLBACK_TOOL_PRIORITY.get(tool_by_id.get(evidence_id, ""), 2),
+    )
+
+
 @dataclass(frozen=True)
 class RoutedTraceResult:
     nodes: list[Node]
@@ -1954,6 +1966,7 @@ class StoryQueryEngine:
         call_summaries = []
         candidates_by_id: dict[str, Any] = {}
         candidate_ids: list[str] = []
+        tool_by_id: dict[str, str] = {}
         for call in run.tool_calls:
             payload = call.payload
             call_summaries.append(
@@ -1980,16 +1993,20 @@ class StoryQueryEngine:
                     evidence_id = run.registry.register(candidate)
                 registered_candidate = run.registry.resolve(evidence_id) or candidate
                 candidates_by_id.setdefault(evidence_id, registered_candidate)
+                tool_by_id.setdefault(evidence_id, call.tool_name)
                 if evidence_id not in candidate_ids:
                     candidate_ids.append(evidence_id)
 
         selected_ids = list(run.cited_ids)
-        if (
+        stopped_without_answer = (
             not selected_ids
             and not run.model_cited_ids
             and run.stop_reason in {"usage_limit", "model_error"}
-        ):
-            selected_ids = candidate_ids[: self._config().final_top_k]
+        )
+        if stopped_without_answer:
+            selected_ids = _rank_fallback_evidence(candidate_ids, tool_by_id)[
+                : self._config().final_top_k
+            ]
 
         candidates = []
         for evidence_id in selected_ids:
@@ -2005,6 +2022,22 @@ class StoryQueryEngine:
             self._trace_candidate_from_tool_candidate(candidate)
             for candidate in candidates
         ]
+        nodes = [
+            (candidate.text, dict(candidate.metadata))
+            for candidate in candidates
+            if candidate.metadata
+        ]
+        # When the agent stops before writing an answer, answer from the evidence it gathered
+        # with one normal synthesis call instead of returning raw tool output.
+        if not stopped_without_answer:
+            answer_source = "agent"
+            direct_answer: str | None = run.answer.answer
+        elif nodes:
+            answer_source = "evidence_synthesis"
+            direct_answer = None
+        else:
+            answer_source = "tool_fallback"
+            direct_answer = run.answer.answer
         stages: dict[StageName, StageTrace] = {
             "agent": self._trace_stage(
                 "agent",
@@ -2013,6 +2046,7 @@ class StoryQueryEngine:
                     "model": run.model_name,
                     "request_count": run.request_count,
                     "stop_reason": run.stop_reason,
+                    "answer_source": answer_source,
                     "fallback_reason": run.fallback_reason,
                     "tool_calls": call_summaries,
                     "model_cited_ids": list(run.model_cited_ids),
@@ -2022,16 +2056,11 @@ class StoryQueryEngine:
             ),
             "final_top_k": self._trace_stage("final_top_k", final_candidates),
         }
-        nodes = [
-            (candidate.text, dict(candidate.metadata))
-            for candidate in candidates
-            if candidate.metadata
-        ]
         citation_labels = tuple(candidate.citation_label for candidate in candidates)
         return RoutedTraceResult(
             nodes=nodes,
             stages=stages,
-            direct_answer=run.answer.answer,
+            direct_answer=direct_answer,
             citation_labels=citation_labels,
         )
 
@@ -2247,6 +2276,16 @@ class StoryQueryEngine:
             routed = self._agent_dispatch_with_trace(question)
             agent_stage = routed.stages.get("agent")
             agent_metadata = dict(agent_stage.metadata) if agent_stage is not None else None
+            if routed.direct_answer is None and routed.nodes:
+                safe_print("Agent stopped before answering; answering from its gathered evidence...")
+                system_prompt, user_prompt = self._raw_answer_prompts(question, routed.nodes, None)
+                return _PreparedQuery(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    router_metadata=agent_metadata,
+                    final_citation_labels=routed.citation_labels,
+                    audit_nodes=tuple(routed.nodes),
+                )
             return _PreparedQuery(
                 immediate_answer=routed.direct_answer or self._router_unavailable_message(
                     routed.stages

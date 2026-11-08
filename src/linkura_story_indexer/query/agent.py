@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, FunctionToolset, UsageLimits
 from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.usage import RunUsage
 
 from linkura_story_indexer.database import (
     create_agentic_generation_model,
@@ -380,6 +381,7 @@ class QueryAgent:
         self.model_name = model_name or get_generation_model_name()
         self.model = model
         self._last_request_count = 0
+        self._run_usage: RunUsage | None = None
 
     def _instructions(self, engine: Any | None) -> str:
         return _agent_instructions(engine)
@@ -398,6 +400,10 @@ class QueryAgent:
             output_type=AgentAnswerDraft,
             instructions=self._instructions(engine),
         )
+        # Shared usage object: it keeps counting even when the run raises UsageLimitExceeded,
+        # so a capped run still reports how many requests it made.
+        usage = RunUsage()
+        self._run_usage = usage
         result = agent.run_sync(
             json.dumps(
                 {"question": question, "default_top_k": final_top_k},
@@ -405,6 +411,7 @@ class QueryAgent:
             ),
             usage_limits=UsageLimits(request_limit=_configured_request_limit()),
             toolsets=[build_agent_toolset(engine, recorder, registry)],
+            usage=usage,
         )
         self._last_request_count = result.usage.requests
         return result.output
@@ -499,6 +506,7 @@ class QueryAgent:
     ) -> AgentRunResult:
         recorder: list[AgentToolCall] = []
         self._last_request_count = 0
+        self._run_usage = None
         registry = EvidenceRegistry(engine)
         raw_answer: AgentAnswerDraft | AgentAnswer
         stop_reason: AgentStopReason
@@ -537,6 +545,8 @@ class QueryAgent:
             raw_answer = AgentAnswerDraft(answer=_answer_from_tool_calls(recorder))
             stop_reason = "model_error"
 
+        if stop_reason != "final_answer" and self._run_usage is not None:
+            self._last_request_count = self._run_usage.requests
         draft = self._coerce_draft(raw_answer, registry)
         answer, model_cited_ids, cited_ids, unresolved_ids = self._resolve_draft(draft, registry)
         return AgentRunResult(
