@@ -614,6 +614,259 @@ def eval_diff_command(
         raise typer.Exit(1) from exc
     console.print(stable_json(diff))
 
+answers_app = typer.Typer(help="Run and report the answer-accuracy benchmark.")
+eval_app.add_typer(answers_app, name="answers")
+
+
+def _load_cases_and_corpus(cases_path: str) -> tuple[Any, Any]:
+    from .eval.answer_runner import CorpusIndex, load_answer_cases, validate_case_sources
+
+    cases = load_answer_cases(cases_path)
+    corpus = CorpusIndex.from_source_store()
+    problems = validate_case_sources(cases, corpus)
+    if problems:
+        for problem in problems:
+            console.print(f"[red]{problem}[/red]")
+        raise typer.Exit(1)
+    return cases, corpus
+
+
+@answers_app.command("validate")
+def answers_validate_command(
+    cases_path: str = typer.Option("eval/answer_cases.json", "--cases", help="Answer case suite JSON."),
+):
+    """Validates the answer case schema and that every evidence passage exists."""
+    try:
+        cases, _ = _load_cases_and_corpus(cases_path)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    reviewed = sum(1 for case in cases.cases if case.review_status == "reviewed")
+    console.print(
+        f"[bold green]{len(cases.cases)} cases valid ({reviewed} reviewed).[/bold green]"
+    )
+
+
+@answers_app.command("run")
+def answers_run_command(
+    cases_path: str = typer.Option("eval/answer_cases.json", "--cases", help="Answer case suite JSON."),
+    modes: list[str] = typer.Option(
+        ["off"],
+        "--mode",
+        help="Routing mode to run; repeat for several, or pass 'all'.",
+    ),
+    output_dir: str = typer.Option("runs/answers", "--output-dir", help="Directory for run JSON files."),
+    judge_model: str = typer.Option(
+        "openai:gpt-6.1-sol",
+        "--judge",
+        help="provider:model for the answer judge.",
+    ),
+    use_judge: bool = typer.Option(True, "--judge-answers/--no-judge", help="Score answers with the judge."),
+    case_ids: list[str] | None = typer.Option(None, "--case", help="Run only these case ids."),
+    reviewed_only: bool = typer.Option(
+        False, "--reviewed-only", help="Skip cases whose review_status is still draft."
+    ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Generation provider for this run (google or openai); overrides LINKURA_INGEST_PROVIDER.",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Generation model for this run; overrides LINKURA_INGEST_MODEL without editing .env.",
+    ),
+):
+    """Runs answer cases through the query engine and judges the answers."""
+    from .eval.answer_runner import (
+        ModelJudge,
+        build_run_config,
+        render_answer_report,
+        run_answer_eval,
+        write_answer_run,
+    )
+
+    selected_modes = list(ROUTING_MODES) if "all" in modes else [_routing_mode(mode) for mode in modes]
+    # Process-local overrides: the model factories read these on every call.
+    if provider is not None:
+        os.environ["LINKURA_INGEST_PROVIDER"] = provider
+    if model is not None:
+        os.environ["LINKURA_INGEST_MODEL"] = model
+    try:
+        cases, corpus = _load_cases_and_corpus(cases_path)
+        initialize_query_settings()
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    judge = ModelJudge(judge_model) if use_judge else None
+
+    runs = []
+    for mode in selected_modes:
+        engine = StoryQueryEngine(retrieval_config=RetrievalConfig(routing_mode=mode))
+        config = build_run_config(
+            mode=mode,
+            cases_path=cases_path,
+            cases=cases,
+            judge=judge,
+            final_top_k=engine.retrieval_config.final_top_k,
+            reviewed_only=reviewed_only,
+        )
+        console.print(f"[bold blue]Running {mode}...[/bold blue]")
+
+        def report_progress(result: Any, mode: str = mode) -> None:
+            status = "error" if result.error else (
+                "pass" if result.answer.passed else ("unjudged" if not result.answer.judged else "fail")
+            )
+            console.print(f"  [{mode}] {result.case_id}: {status}", markup=False)
+
+        run = run_answer_eval(
+            cases,
+            config=config,
+            engine=engine,
+            corpus=corpus,
+            judge=judge,
+            case_ids=case_ids,
+            on_result=report_progress,
+        )
+        destination = Path(output_dir) / f"{mode}.json"
+        write_answer_run(run, destination)
+        runs.append(run)
+        console.print(f"[bold green]Wrote {destination}[/bold green]")
+    report_path = Path(output_dir) / "report.md"
+    report_path.write_text(render_answer_report(runs), encoding="utf-8")
+    console.print(f"[bold green]Wrote {report_path}[/bold green]")
+
+
+@answers_app.command("review")
+def answers_review_command(
+    cases_path: str = typer.Option("eval/answer_cases.json", "--cases", help="Answer case suite JSON."),
+    run_dirs: list[str] = typer.Option(
+        ["runs/answers"],
+        "--runs",
+        help="Directory scanned recursively for answer run JSON files; repeat for several.",
+    ),
+    port: int = typer.Option(8765, "--port", help="Local port to serve on."),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the page in a browser."),
+):
+    """Serves a local page for reviewing, editing, and approving answer cases."""
+    import webbrowser
+
+    from .eval.answer_runner import CorpusIndex
+    from .eval.review_server import ReviewStore, serve
+
+    store = ReviewStore(cases_path, CorpusIndex.from_source_store(), run_dirs)
+    try:
+        store.load()
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    server = serve(store, port=port)
+    url = f"http://127.0.0.1:{server.server_port}/"
+    console.print(f"[bold green]Reviewing {cases_path} at {url}[/bold green] (Ctrl+C to stop)")
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("Stopped.")
+    finally:
+        server.server_close()
+
+
+@answers_app.command("rescore")
+def answers_rescore_command(
+    run_files: list[str] = typer.Argument(..., help="Answer run JSON files to rescore in place."),
+    cases_path: str = typer.Option("eval/answer_cases.json", "--cases", help="Answer case suite JSON."),
+):
+    """Re-scores saved runs against the current cases and rules, without new model calls."""
+    from .eval.answer_runner import (
+        load_answer_cases,
+        load_answer_run,
+        rescore_run,
+        write_answer_run,
+    )
+
+    try:
+        cases = load_answer_cases(cases_path)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    for path in run_files:
+        try:
+            run, changed, needs_rejudge = rescore_run(load_answer_run(path), cases)
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+        write_answer_run(run, path)
+        summary = ", ".join(changed) if changed else "no changes"
+        console.print(f"{path}: {summary}", markup=False)
+        if needs_rejudge:
+            console.print(
+                f"  needs rejudge (claims changed): {', '.join(needs_rejudge)}", markup=False
+            )
+
+
+@answers_app.command("rejudge")
+def answers_rejudge_command(
+    run_file: str = typer.Argument(..., help="Answer run JSON whose saved answers to re-judge."),
+    judge_model: str | None = typer.Option(
+        None, "--judge", help="provider:model for the judge (default: the run's own judge)."
+    ),
+    output: str | None = typer.Option(
+        None, "--output", help="Where to write the re-judged run (default: overwrite the input)."
+    ),
+    cases_path: str = typer.Option("eval/answer_cases.json", "--cases", help="Answer case suite JSON."),
+    case_ids: list[str] | None = typer.Option(None, "--case", help="Re-judge only these case ids."),
+):
+    """Judges a saved run's answers again with a different judge, without rerunning the system."""
+    from .eval.answer_runner import ModelJudge, load_answer_run, rejudge_run, write_answer_run
+
+    try:
+        cases, corpus = _load_cases_and_corpus(cases_path)
+        run = load_answer_run(run_file)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    def report_progress(result: Any) -> None:
+        status = "pass" if result.answer.passed else ("unjudged" if not result.answer.judged else "fail")
+        console.print(f"  {result.case_id}: {status}", markup=False)
+
+    judge_spec = judge_model or run.config.judge_model
+    if not judge_spec:
+        console.print("[red]Error: the run has no judge; pass --judge.[/red]")
+        raise typer.Exit(1)
+    rejudged = rejudge_run(
+        run, cases, corpus, ModelJudge(judge_spec), case_ids=case_ids, on_result=report_progress
+    )
+    destination = output or run_file
+    write_answer_run(rejudged, destination)
+    console.print(f"[bold green]Wrote {destination}[/bold green]")
+
+
+@answers_app.command("report")
+def answers_report_command(
+    run_files: list[str] = typer.Argument(..., help="Answer run JSON files to compare."),
+    output: str | None = typer.Option(None, "--output", help="Write the Markdown report here."),
+    labels: list[str] | None = typer.Option(
+        None, "--label", help="Column label for each run, in order; repeat once per run."
+    ),
+):
+    """Renders a Markdown comparison of answer benchmark runs."""
+    from .eval.answer_runner import load_answer_run, render_answer_report
+
+    try:
+        report = render_answer_report([load_answer_run(path) for path in run_files], labels)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    if output is None:
+        console.print(report, markup=False)
+        return
+    Path(output).write_text(report, encoding="utf-8")
+    console.print(f"[bold green]Wrote {output}[/bold green]")
+
+
 @app.command("export-summary-reader")
 def export_summary_reader_command(
     cache_file: str = typer.Option("summaries_cache.json", help="Path to the summaries cache file"),

@@ -1,0 +1,1036 @@
+{
+  "schema_version": "1",
+  "suite_version": "1",
+  "cases": [
+    {
+      "id": "a001_kaho_sayaka_first_meeting",
+      "question": "Where did Kaho and Sayaka first meet?",
+      "categories": [
+        "fact"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): the 105 Ep11 Pt4 Part summary said they first met at Tsuzumimon Gate; the raw text puts the meeting on the bus.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "bus",
+          "claim": "They first met on the bus to Hasunosora, where they sat next to each other.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "花帆: せっかくバスで隣の席になれたんだよ！？"
+            },
+            {
+              "file_path": "story/105/第11話『みんなで、花咲きたい！』/4.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "そして初めて乗った蓮ノ空行きのバスの中、運命の出会いが……！"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "gate",
+          "claim": "They first met at Tsuzumimon Gate.",
+          "note": "Tsuzumimon Gate is only the first Kanazawa landmark Kaho saw (105 Ep11 Pt4)."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "Full credit requires the bus. Mentioning Tsuzumimon Gate as the first landmark Kaho saw is fine; placing the meeting there is wrong."
+    },
+    {
+      "id": "a002_reika_san_identity",
+      "question": "Who is Reika-san (れいかさん), and how does Tsuzuri know her?",
+      "categories": [
+        "alias"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Summary regeneration review (this repo, 2026-11-05): the 104 Ep8 Pt2 summary mapped れいかさん to the glossary entry 令沢葵 (Aoi Reisawa).",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "market",
+          "claim": "Reika-san is one of the Omicho Market shop people Tsuzuri helps out; Tsuzuri brings Sayaka to help her in 103 Episode 5.",
+          "evidence": [
+            {
+              "file_path": "story/103/第5話『顔を上げて』/2.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "れいかさん: あらあらあらあら！ 綴理ちゃん久しぶりー！！"
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/4.md",
+              "scene_start": 4,
+              "scene_end": 6
+            }
+          ]
+        },
+        {
+          "id": "just_standing",
+          "claim": "Before, Reika-san had Tsuzuri just stand at the shop; in 104 Episode 8 she agrees to let Tsuzuri properly work there as one of her job experiences.",
+          "evidence": [
+            {
+              "file_path": "story/103/第5話『顔を上げて』/2.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "綴理ちゃんはそこに立ってくれているだけで、みんな喜ぶわ。"
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/2.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "あとは、れいかさんに頼んだら、一度ちゃんとお仕事してもいいって。立ってるだけじゃなくて。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "aoi",
+          "claim": "Reika-san is Aoi Reisawa (令沢葵) or another named glossary character.",
+          "note": "The source only ever names her れいかさん."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "The answer must keep Reika-san separate from Aoi Reisawa and place her at the market. Saying she sells fish, or that the text gives no surname, is fine."
+    },
+    {
+      "id": "a003_kaho_transfer_papers",
+      "question": "In 103 Episode 1, what does Kaho do with her school transfer papers, and what does she decide?",
+      "categories": [
+        "causal"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): a guide claimed Kaho tears up the transfer form; the text only shows 「これを、こうしてやるんだ！」 and the class gasping, so tearing is implied, not stated.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "papers",
+          "claim": "Her classmates catch her with transfer papers (転入届) and worry she is leaving the school.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/5.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "えな: 今の転入届、だったよね……。"
+            }
+          ]
+        },
+        {
+          "id": "stays",
+          "claim": "She gathers her classmates, does away with the papers (「これを、こうしてやるんだ！」) and announces she is no longer quitting the school.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/5.md",
+              "scene_start": 10,
+              "scene_end": 10,
+              "quote": "花帆: あたしね、学校やめるの、やめることにする！"
+            }
+          ]
+        },
+        {
+          "id": "change",
+          "claim": "She says she had been blaming Hasunosora for everything and vows to change the school herself.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/5.md",
+              "scene_start": 10,
+              "scene_end": 10,
+              "quote": "花帆: あたしが、この学校を変えてみせる！"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "Saying she tears up the papers is acceptable as an interpretation; it is not required. The decision to stay and change the school is essential."
+    },
+    {
+      "id": "a004_burupa_union",
+      "question": "What is the 'Burupa Union' and why was it formed?",
+      "categories": [
+        "alias",
+        "chronology"
+      ],
+      "origin": "curated",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): verified correct summary claim; kept as a regression case.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "name",
+          "claim": "It is the Bloom Garden Party organizing union (Bloom Garden Party運営連合), nicknamed ブルパ連合.",
+          "evidence": [
+            {
+              "file_path": "story/105/第11話『みんなで、花咲きたい！』/1.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "吟子: そこで発足したのが、Bloom Garden Party運営連合。別名『ブルパ連合』。"
+            }
+          ]
+        },
+        {
+          "id": "why",
+          "claim": "After the December Starring Bloom, Bloom Garden Parties were to be held one after another around the country, which the club members could not run alone.",
+          "evidence": [
+            {
+              "file_path": "story/105/第11話『みんなで、花咲きたい！』/1.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "吟子: 12月のStarring Bloomの結論を経て、全国様々な場所でBloom Garden Partyが連続開催されることになりました。"
+            }
+          ]
+        },
+        {
+          "id": "members",
+          "claim": "Its members are people who saw the Starring Bloom and wanted to take part themselves.",
+          "evidence": [
+            {
+              "file_path": "story/105/第11話『みんなで、花咲きたい！』/1.md",
+              "scene_start": 1,
+              "scene_end": 1
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The order matters: Starring Bloom first, then the decision to hold BGPs everywhere, then the union."
+    },
+    {
+      "id": "a005_sachi_bgp_role",
+      "question": "What role does Sachi-pai say she will have at the Bloom Garden Party?",
+      "categories": [
+        "alias",
+        "fact"
+      ],
+      "origin": "curated",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): verified correct summary claim (「裏方としてだけど」); kept as a regression case.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "backstage",
+          "claim": "Sachi (沙知) says she will take part in the Bloom Garden Party, but behind the scenes rather than on stage.",
+          "evidence": [
+            {
+              "file_path": "story/105/第12話『ずっと花咲く僕らの桜』/4.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "沙知: あたしもBloom Garden Partyには出るつもりだからねぃ。裏方としてだけど。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "performs",
+          "claim": "Sachi performs on stage at the Bloom Garden Party."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "The answer must identify Sachi-pai as Sachi and give the backstage role."
+    },
+    {
+      "id": "a006_joint_presidency",
+      "question": "How is the next club president decided at the end of 104?",
+      "categories": [
+        "causal",
+        "relationship_change"
+      ],
+      "origin": "curated",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): verified correct summary claim (「ふたりで部長やろう！？」); kept as a regression case.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "kozue_offer",
+          "claim": "Kozue had asked Sayaka to become next year's president, but Sayaka held off.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "さやか: 梢先輩から、来年度の部長にならないかと言われていたのですが、それを保留にしていた理由は、これです。"
+            }
+          ]
+        },
+        {
+          "id": "sayaka_proposes",
+          "claim": "Sayaka thinks the club should be led by someone with a big dream and proposes Kaho as president.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "さやか: 花帆さん、あなたが部長をやりませんか？"
+            }
+          ]
+        },
+        {
+          "id": "joint",
+          "claim": "Kaho accepts but proposes that she and Sayaka be presidents together, and Sayaka agrees.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "花帆: だからふたりで部長やろう！？"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "sayaka_alone",
+          "claim": "Sayaka alone becomes president."
+        },
+        {
+          "id": "skating",
+          "claim": "Sayaka declines the presidency to focus on figure skating."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "All three steps are needed. Mentioning Rurino supporting the others is fine."
+    },
+    {
+      "id": "a007_link_to_the_future",
+      "question": "What is 'Link to the FUTURE', and what do the members decide to do with it in 104 Episode 7?",
+      "categories": [
+        "fact",
+        "causal"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): an earlier note called it 'the 104 Love Live! song'; the text has it as the all-unit medley that lost the previous year's final, rebuilt for nine members.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "medley",
+          "claim": "It is a medley that combines the three units' strengths with the all-member song.",
+          "evidence": [
+            {
+              "file_path": "story/104/第7話『Link to the FRIENDS！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "さやか: それぞれのユニットが積み上げてきた力をひとつに束ねて、ひとつの曲に結集させる。"
+            }
+          ]
+        },
+        {
+          "id": "lost",
+          "claim": "It is the song they lost with in the previous year's Love Live! final.",
+          "evidence": [
+            {
+              "file_path": "story/104/第7話『Link to the FRIENDS！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "吟子: 決勝で負けちゃった曲……なんですよね？"
+            }
+          ]
+        },
+        {
+          "id": "nine",
+          "claim": "They rebuild it for the nine current members and plan to debut it at the Rindou Festival before the qualifiers.",
+          "evidence": [
+            {
+              "file_path": "story/104/第7話『Link to the FRIENDS！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "9人になった新生Link to the FUTUREを、みんなに！"
+            },
+            {
+              "file_path": "story/104/第7話『Link to the FRIENDS！』/12.md",
+              "scene_start": 1,
+              "scene_end": 1
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "new_song",
+          "claim": "Link to the FUTURE is a new song written for the 104 Love Live!."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "Must say it is the previous year's song, not a new one."
+    },
+    {
+      "id": "a008_kosuzu_solo_live",
+      "question": "In 104 Episode 2, what happens at Kosuzu's impromptu solo live, and how does it affect Sayaka?",
+      "categories": [
+        "causal",
+        "relationship_change"
+      ],
+      "origin": "curated",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): verified correct summary claim (Kosuzu's solo live, 104 Ep2 Pt7); kept as a regression case.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "song",
+          "claim": "Kosuzu performs DOLLCHESTRA's Sparkly Spot in front of a crowd as a 'revenge' live.",
+          "evidence": [
+            {
+              "file_path": "story/104/第2話『踊り続けよう、きみが見てる』/7.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "小鈴: 曲はDOLLCHESTRAのーーSparkly Spot！！"
+            }
+          ]
+        },
+        {
+          "id": "stumbles",
+          "claim": "She falls and makes mistakes but keeps going.",
+          "evidence": [
+            {
+              "file_path": "story/104/第2話『踊り続けよう、きみが見てる』/7.md",
+              "scene_start": 0,
+              "scene_end": 0
+            },
+            {
+              "file_path": "story/104/第2話『踊り続けよう、きみが見てる』/7.md",
+              "scene_start": 3,
+              "scene_end": 3
+            }
+          ]
+        },
+        {
+          "id": "sayaka",
+          "claim": "Sayaka tells her it was not a failure because her feelings came through, says the live saved her own past, and promises to stay Kosuzu's goal.",
+          "evidence": [
+            {
+              "file_path": "story/104/第2話『踊り続けよう、きみが見てる』/7.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "さやか: わたしはーーあなたの目標であり続けます。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The song and Sayaka's response are essential."
+    },
+    {
+      "id": "a009_tsuzuri_job_experiences",
+      "question": "What job experiences does Tsuzuri try in 104 Episode 8, and who arranged each one?",
+      "categories": [
+        "fact"
+      ],
+      "origin": "curated",
+      "origin_note": "Summary regeneration review (this repo, 2026-11-05): 104 Ep8 Pt2/Pt3 checked against the raw text.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "city_hall",
+          "claim": "Clerical data entry at the city hall, arranged by the dorm mother.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/2.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "綴理: うん、頑張ってみる。  市役所の事務。"
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/3.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "寮母: 今日やるのは、シンプルなデータ入力の仕事です。"
+            }
+          ]
+        },
+        {
+          "id": "dyeing",
+          "claim": "Serving customers at the hands-on corner of a traditional dyeing shop connected to Ginko's family, arranged by Ginko.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/2.md",
+              "scene_start": 2,
+              "scene_end": 2
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/4.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "吟子: ここは、百生の家と昔からお付き合いのある、伝統ある染物屋さんです。"
+            }
+          ]
+        },
+        {
+          "id": "market",
+          "claim": "Working at Reika-san's shop at the market, which Tsuzuri arranged herself by asking Reika-san.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/2.md",
+              "scene_start": 2,
+              "scene_end": 2
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/4.md",
+              "scene_start": 4,
+              "scene_end": 4
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "All three jobs with the right arranger. Kosuzu accompanying Tsuzuri at the dyeing shop is fine."
+    },
+    {
+      "id": "a010_kozue_invites_kaho",
+      "question": "According to Kozue, in what role did she invite Kaho to the club, and what did she really want?",
+      "categories": [
+        "fact",
+        "quote"
+      ],
+      "origin": "curated",
+      "origin_note": "Summary regeneration review (this repo, 2026-11-05): 103 Ep2 Pt4 checked against the raw text.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "manager",
+          "claim": "Kozue says she invited Kaho as the club's manager.",
+          "evidence": [
+            {
+              "file_path": "story/103/第2話『ダメダメ⇒世界一！？』/4.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "梢: ま、マネージャーに、そう、マネージャーに誘ったのは私、ってことよ。"
+            },
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/4.md",
+              "scene_start": 3,
+              "scene_end": 7
+            }
+          ]
+        },
+        {
+          "id": "idol",
+          "claim": "She admits she actually wanted to invite Kaho as a school idol too.",
+          "evidence": [
+            {
+              "file_path": "story/103/第2話『ダメダメ⇒世界一！？』/4.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "梢: ……スクールアイドルにも、本当は誘いたかったのだけれど……。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "Both parts are needed."
+    },
+    {
+      "id": "a011_third_year_career_plans",
+      "question": "In October of their third year (105 Episode 7), what are Sayaka's, Kaho's and Rurino's plans after graduation?",
+      "categories": [
+        "fact"
+      ],
+      "origin": "curated",
+      "origin_note": "Summary regeneration review (this repo, 2026-11-05): 105 Ep7 Pt1 checked against the raw text.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "sayaka",
+          "claim": "Sayaka will go to university and use her school idol experience in figure skating.",
+          "evidence": [
+            {
+              "file_path": "story/105/第7話『わがまま色の存在証明』/1.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "さやか: 卒業後は大学進学です。"
+            }
+          ]
+        },
+        {
+          "id": "kaho",
+          "claim": "Kaho will go to university but cannot yet say what she wants to do.",
+          "evidence": [
+            {
+              "file_path": "story/105/第7話『わがまま色の存在証明』/1.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "花帆: やりたいことはたくさんあるもん！  だから大学には行く！"
+            }
+          ]
+        },
+        {
+          "id": "rurino",
+          "claim": "Rurino probably won't go to university and is unsure whether following Megumi is right.",
+          "evidence": [
+            {
+              "file_path": "story/105/第7話『わがまま色の存在証明』/1.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "瑠璃乃: めぐちゃん追いかけて、一緒に世界中を夢中にする……で、本当に良いのかなって。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "scope": {
+        "through_file_path": "story/105/第7話『わがまま色の存在証明』/1.md",
+        "description": "As of 105 Episode 7 Part 1; later decisions are out of scope."
+      },
+      "rubric": "Answer as of this point in the story. Later developments should not be presented as the plan at this point."
+    },
+    {
+      "id": "a012_tsuzuri_advice_quote",
+      "question": "In 104 Episode 8, what does Tsuzuri tell the elementary-school girl who asks how to become a school idol like her? Quote the key line in Japanese.",
+      "categories": [
+        "quote"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): the 104 Ep8 summary listed Aoi Reisawa in this scene; the text has only an unnamed elementary-school fan (小学生).",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "quote",
+          "claim": "Tsuzuri says 「必要なのは、キミのきらめきたい気持ちだけ。」",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "綴理: 必要なのは、キミのきらめきたい気持ちだけ。"
+            }
+          ]
+        },
+        {
+          "id": "not_special",
+          "claim": "She says anyone can become a school idol whenever they decide to; school idols aren't special.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "綴理: なろうと思ったらいつでもなれる。  スクールアイドルは、特別なものじゃない。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "aoi",
+          "claim": "The girl is Aoi Reisawa (令沢葵)."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "The Japanese quote must match the source; minor punctuation differences are fine."
+    },
+    {
+      "id": "a013_unnamed_fan",
+      "question": "What is the name of the elementary-school girl Tsuzuri encourages after her performance in 104 Episode 8?",
+      "categories": [
+        "unanswerable"
+      ],
+      "origin": "observed_failure",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): the indexer summary named her as Aoi Reisawa; the source never names her.",
+      "review_status": "reviewed",
+      "review_note": "Abstention set to not-checked on 2026-11-07 with the reviewer's approval: \"the story doesn't say\" is the correct answer.",
+      "expected_claims": [
+        {
+          "id": "unnamed",
+          "claim": "The story does not name her; she is only labeled 小学生 (elementary-school student).",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "小学生: あ、あの！！"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "aoi",
+          "claim": "She is Aoi Reisawa (令沢葵)."
+        }
+      ],
+      "rubric": "The correct answer is that the story never names her (she is credited only as 小学生). Saying so is a full answer, not a refusal. Any invented name fails.",
+      "expect_abstention": null
+    },
+    {
+      "id": "a014_reika_surname",
+      "question": "What is Reika-san's full name, including her surname?",
+      "categories": [
+        "unanswerable",
+        "alias"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: every occurrence in the corpus is only れいかさん.",
+      "review_status": "reviewed",
+      "review_note": "Abstention set to not-checked on 2026-11-07 with the reviewer's approval: \"the story doesn't say\" is the correct answer.",
+      "expected_claims": [
+        {
+          "id": "no_surname",
+          "claim": "The story never gives her surname; she is only ever called れいかさん.",
+          "evidence": [
+            {
+              "file_path": "story/103/第5話『顔を上げて』/2.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "れいかさん: あらあらあらあら！ 綴理ちゃん久しぶりー！！"
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/4.md",
+              "scene_start": 4,
+              "scene_end": 6
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "reisawa",
+          "claim": "Her surname is Reisawa (令沢), or she is Aoi Reisawa."
+        }
+      ],
+      "rubric": "The correct answer is that the story never gives her surname. Saying so is a full answer, not a refusal. Identifying her as a market shop person is a bonus, not required. Any invented surname fails.",
+      "expect_abstention": null
+    },
+    {
+      "id": "a015_reika_line_count",
+      "question": "How many lines of dialogue does Reika-san (れいかさん) speak in 104 Episode 8?",
+      "categories": [
+        "count",
+        "alias"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: exact count from the indexed dialogue turns.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "count",
+          "claim": "Reika-san has 10 dialogue turns in 104 Episode 8 (all in Part 4).",
+          "evidence": [],
+          "verified_by": "SourceRecordStore.count_turns('れいかさん', arc_id='104', episode=8) == 10"
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The number must be exactly 10. Mentioning that her lines are in Part 4 is a bonus."
+    },
+    {
+      "id": "a016_kosuzu_turn_count",
+      "question": "How many dialogue turns does Kosuzu have in 104 Episode 2?",
+      "categories": [
+        "count"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: exact count from the indexed dialogue turns, including shared lines.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "count",
+          "claim": "Kosuzu (小鈴) has 148 dialogue turns in 104 Episode 2.",
+          "evidence": [],
+          "verified_by": "SourceRecordStore.count_turns('小鈴', arc_id='104', episode=2) == 148"
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The number must be exactly 148; an estimate fails."
+    },
+    {
+      "id": "a017_omicho_market_history",
+      "question": "How did the club's connection to Omicho Market start, and where does it come back in the main story?",
+      "categories": [
+        "interleave",
+        "causal"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: links the Shades of Stars side story to main-story episodes.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "sachi",
+          "claim": "In the Shades of Stars side story, Sachi brings the club members to help at Omicho Market shops, saying local support is essential and her own senior once brought her there.",
+          "evidence": [
+            {
+              "file_path": "story/102/～Shades of Stars～/第2話.md",
+              "scene_start": 4,
+              "scene_end": 4,
+              "quote": "「あたしたちの活動は、地元の人の応援が不可欠だ。こういうところで顔を売るのも、大事なんだよ。」"
+            },
+            {
+              "file_path": "story/103/～Shades of Stars～/第2話.md",
+              "scene_start": 4,
+              "scene_end": 4
+            }
+          ]
+        },
+        {
+          "id": "live",
+          "claim": "They hold a live on a small stage in a park near the market for the market staff.",
+          "evidence": [
+            {
+              "file_path": "story/102/～Shades of Stars～/第2話.md",
+              "scene_start": 9,
+              "scene_end": 9
+            },
+            {
+              "file_path": "story/103/～Shades of Stars～/第2話.md",
+              "scene_start": 9,
+              "scene_end": 9
+            },
+            {
+              "file_path": "story/102/～Shades of Stars～/第3話.md",
+              "scene_start": 2,
+              "scene_end": 2
+            },
+            {
+              "file_path": "story/103/～Shades of Stars～/第3話.md",
+              "scene_start": 2,
+              "scene_end": 2
+            }
+          ]
+        },
+        {
+          "id": "main",
+          "claim": "In the main story, Tsuzuri brings Sayaka to help at the market in 103 Episode 5, and in 104 Episode 8 Reika-san remarks how much Tsuzuri has changed since two years earlier.",
+          "evidence": [
+            {
+              "file_path": "story/103/第5話『顔を上げて』/2.md",
+              "scene_start": 2,
+              "scene_end": 2
+            },
+            {
+              "file_path": "story/104/第8話『Not a marionette』/4.md",
+              "scene_start": 4,
+              "scene_end": 4
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "Must connect the side story to at least one main-story return. Both main-story returns are needed for full credit."
+    },
+    {
+      "id": "a018_ginko_new_tradition",
+      "question": "At the close of Bloom Days in 105 Episode 6, what does Ginko ask of Kanazawa, and why does she think the event must continue every year?",
+      "categories": [
+        "causal"
+      ],
+      "origin": "curated",
+      "origin_note": "Onibe-Subs movie-guide fact-check session (Claude, 2026-10-26): verified correct summary claim (Ginko's yearly-tradition pledge, 105 Ep6 Pt8); kept as a regression case.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "festival",
+          "claim": "She wants the Bloom Garden Party to become a new Kanazawa festival that lasts for years or decades, and to hold it this school year.",
+          "evidence": [
+            {
+              "file_path": "story/105/第6話『未来への花』/8.md",
+              "scene_start": 2,
+              "scene_end": 2,
+              "quote": "何年も、何十年も続いていく金沢の新たなお祭り、『Bloom Garden Party』を作りたいんです！！"
+            }
+          ]
+        },
+        {
+          "id": "every_year",
+          "claim": "She believes the only way for it not to be forgotten is to keep holding it every year, which she cannot do alone, so she wants each person to treat it as their own festival.",
+          "evidence": [
+            {
+              "file_path": "story/105/第6話『未来への花』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "吟子: ーー忘れられないためには、このイベントを毎年続けていくしかない。"
+            }
+          ]
+        },
+        {
+          "id": "tradition",
+          "claim": "She wants to create a new tradition that continues even after she is gone.",
+          "evidence": [
+            {
+              "file_path": "story/105/第6話『未来への花』/8.md",
+              "scene_start": 7,
+              "scene_end": 7,
+              "quote": "イベントを続けていくことができるように！  新しい伝統を、作りたいんです！"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The festival goal and the every-year reasoning are essential."
+    },
+    {
+      "id": "a019_kaho_sayaka_arc",
+      "question": "How does Kaho and Sayaka's relationship change between their first meeting and the end of 104?",
+      "categories": [
+        "relationship_change"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: cross-year relationship change.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "start",
+          "claim": "When they first meet on the bus, Sayaka is standoffish, says getting to know her won't be fun, and even asks to change seats.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0,
+              "quote": "さやか: 誰か、席変わってもらえませんか！？"
+            }
+          ]
+        },
+        {
+          "id": "end",
+          "claim": "By the end of 104 Sayaka offers to follow Kaho as president, and they agree to lead the club together as co-presidents.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "花帆: だからふたりで部長やろう！？"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "Both endpoints are required; intermediate events are optional."
+    },
+    {
+      "id": "a020_episode1_order",
+      "question": "In 103 Episode 1, in what order do these happen: Kaho announces she will stay at Hasunosora, Kaho meets Sayaka on the bus, and Kaho's classmates see her transfer papers?",
+      "categories": [
+        "chronology"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: within-episode chronology.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "first",
+          "claim": "First, Kaho meets Sayaka on the bus.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/1.md",
+              "scene_start": 0,
+              "scene_end": 0
+            }
+          ]
+        },
+        {
+          "id": "second",
+          "claim": "Second, her classmates see her transfer papers.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/5.md",
+              "scene_start": 0,
+              "scene_end": 0
+            }
+          ]
+        },
+        {
+          "id": "third",
+          "claim": "Last, she announces she will stay and change the school.",
+          "evidence": [
+            {
+              "file_path": "story/103/第1話『花咲きたい！』/5.md",
+              "scene_start": 10,
+              "scene_end": 10
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "The order must be exactly bus, then papers, then announcement."
+    },
+    {
+      "id": "a021_sayaka_presidency_false_premise",
+      "question": "Why did Sayaka turn down the club presidency to focus on figure skating?",
+      "categories": [
+        "causal"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: false-premise question; the answer must correct the premise rather than invent a reason.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "premise",
+          "claim": "She did not turn it down for figure skating; she put Kozue's offer on hold because she thought someone with a big dream should lead.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1,
+              "quote": "さやか: 部を引っ張っていくなら、それはきっと大きな夢のある人が良い。"
+            }
+          ]
+        },
+        {
+          "id": "outcome",
+          "claim": "She ends up co-president with Kaho.",
+          "evidence": [
+            {
+              "file_path": "story/104/第13話『いずれ会う約束の桜』/WILL.md",
+              "scene_start": 1,
+              "scene_end": 1
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [
+        {
+          "id": "skating",
+          "claim": "Sayaka declined the presidency to focus on figure skating."
+        }
+      ],
+      "expect_abstention": false,
+      "rubric": "The answer must reject the premise. Mentioning her later plan to continue figure skating at university (105) is fine if it is not given as the reason."
+    },
+    {
+      "id": "a022_tsuzuri_not_a_school_idol",
+      "question": "Where does Tsuzuri say she was once told she was 'just Yugiri Tsuzuri, not a school idol', and how does she view that now?",
+      "categories": [
+        "quote",
+        "causal"
+      ],
+      "origin": "curated",
+      "origin_note": "Gap filler: quote attribution with Tsuzuri's own reflection.",
+      "review_status": "reviewed",
+      "expected_claims": [
+        {
+          "id": "contest",
+          "claim": "She says she was told this at a school idol competition.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "綴理: ボクはね、いつかスクールアイドルの大会で、言われたことがあるんだ。"
+            }
+          ]
+        },
+        {
+          "id": "half",
+          "claim": "She now thinks it was half right and half wrong.",
+          "evidence": [
+            {
+              "file_path": "story/104/第8話『Not a marionette』/8.md",
+              "scene_start": 3,
+              "scene_end": 3,
+              "quote": "綴理: 今思うと……あれは半分合ってて、半分間違ってたと思うんだ。"
+            }
+          ]
+        }
+      ],
+      "forbidden_claims": [],
+      "expect_abstention": false,
+      "rubric": "Both parts are needed. Context about the elementary-school girl is optional."
+    }
+  ]
+}

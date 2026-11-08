@@ -40,7 +40,13 @@ multi-step tool-calling loop that can combine glossary lookup, retrieval,
 point-in-time State Ledger checks, and exact SQL dialogue counts. Counting
 questions in agentic mode must use `count_dialogue`; the answer is never an
 LLM estimate. Agentic mode uses at most eight model requests by default; set
-`LINKURA_AGENT_REQUEST_LIMIT` to change the cap. The router model is controlled
+`LINKURA_AGENT_REQUEST_LIMIT` to change the cap. If the agent reaches the cap (or
+the model errors) before writing an answer, the engine answers from the evidence
+it gathered with one normal answer call, preferring scenes the agent opened
+directly, then search hits, then summaries. Only when it gathered nothing usable
+does it return the raw tool output. The trace records which path answered in
+the agent stage's `answer_source` (`agent`, `evidence_synthesis` or
+`tool_fallback`). The router model is controlled
 by `LINKURA_ROUTER_MODEL`. With the Google provider it defaults to
 `gemini-3.1-flash-lite-preview`; with the OpenAI provider it defaults to the
 configured generation model.
@@ -110,6 +116,69 @@ indexer eval diff runs/router.json runs/agentic.json
 Until the reranker lands, reranker metrics are emitted as unavailable. The
 current golden set remains single-scene; multi-hop and expanded quantitative
 coverage should be added in a follow-up evaluation issue.
+
+## Answer Benchmark
+
+The retrieval golden set checks whether one gold scene is retrieved. The answer
+benchmark in `eval/answer_cases.json` checks whether the final answer is right.
+Each case lists the claims a correct answer must make (each with one or more
+acceptable source passages), plausible wrong claims that fail the case, an
+optional spoiler boundary, and a grading rubric. Cases record whether they came
+from an observed failure or were curated, and stay `draft` until a person has
+reviewed them against the source.
+
+Two scorers run on every case:
+
+- **Evidence (deterministic):** whether each required passage was seen by the
+  run and reached the answer step, whether cited labels exist in the supplied
+  evidence, and whether evidence crossed the spoiler boundary.
+- **Answer (model-judged):** a judge from a different provider than the system
+  under test (default `openai:gpt-6.1-sol`) marks each claim present, partial,
+  missing or contradicted, flags forbidden and unsupported statements, and
+  checks abstention. A case passes when every claim is present, nothing is
+  contradicted or forbidden, and abstention matches the expectation. An
+  agentic run that returned raw tool output instead of an answer fails without
+  being judged.
+
+Runs record the models, prompt versions, corpus and code revisions, latency,
+token usage and an estimated cost from the list prices in
+`src/linkura_story_indexer/eval/usage.py`. Models without a configured price
+report cost as unavailable. Embedding calls are not metered.
+
+```powershell
+uv run indexer eval answers validate
+uv run indexer eval answers run --mode all --output-dir runs/answers/2026-11-07-baseline
+uv run indexer eval answers run --mode agentic --case a001_kaho_sayaka_first_meeting --no-judge
+uv run indexer eval answers rescore runs/answers/2026-11-07-baseline/*.json
+uv run indexer eval answers report runs/answers/2026-11-07-baseline/off.json runs/answers/2026-11-07-baseline/agentic.json --output report.md
+```
+
+### Reviewing cases
+
+`indexer eval answers review` serves a local page (127.0.0.1 only) for working
+through the suite:
+
+```powershell
+uv run indexer eval answers review
+```
+
+- Edit any field, add or remove claims, sources and forbidden claims, and
+  create new cases. Saves are validated against the schema and the corpus
+  before `eval/answer_cases.json` is rewritten.
+- **Approve** marks a case `reviewed`. Changing a reviewed case's content puts
+  it back to `draft`, so approvals always refer to what is in the file.
+- The **Source** tab shows each cited passage with the quote highlighted, with
+  buttons to widen the context. **Search story** runs a regex over the corpus
+  and can add a hit to a claim as a new source.
+- **Run results** shows how every saved run answered the case, with the judge's
+  per-claim verdicts. The **Runs** view compares all runs found under
+  `runs/answers` (change with `--runs`), so new benchmark runs appear there
+  after **Reload runs**.
+
+Live runs need `GOOGLE_API_KEY` (query embeddings and Gemini generation) and
+`OPENAI_API_KEY` for the default judge. Use `--reviewed-only` to score only
+reviewed cases. `rescore` reapplies the deterministic scoring rules to saved
+runs after a rule change, without new model calls.
 
 ## Index Rebuilds
 

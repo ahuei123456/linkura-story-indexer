@@ -229,3 +229,6 @@ web/summary-reader-production/data/
 # LLM stuff
 .claude/
 .codex/
+
+# Local benchmark run outputs
+runs/
