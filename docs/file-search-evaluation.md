@@ -88,9 +88,9 @@ File Search is useful at rung 2, especially as a one-shot summary/raw-corpus
 answer tool, but becomes less useful as the system moves toward rung 3/4. It
 has tuning knobs (`top_k`, `metadata_filter`, thresholds), but retrieval remains
 trapped inside `generate_content` instead of exposing inspectable candidates.
-Real agentic value comes from rich, narrowly-typed tools (`search_summaries`,
-`search_raw`, `get_scene`, `get_character_state`) — which File Search can't
-provide by itself.
+Real agentic value comes from rich, narrowly-typed tools
+(`vector_search_summaries`, `vector_search_raw`, `get_summaries`, `get_scene`,
+`get_state`) — which File Search can't provide by itself.
 
 **Provider lock-in:** File Search is a Gemini-only `Tool`. OpenAI agent path
 can't use it; the custom tool surface gets built regardless.
